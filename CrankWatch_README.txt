@@ -1,6 +1,6 @@
 CrankWatch v1.0 — Complete Commands README
 A cinematic Weapon Skill tracker addon for Final Fantasy XI / Windower
-
+NOTE:  You must publish damage to your log.  Check Config > Misc. > Damage Display: Make sure either 'Log' or 'Both' is selected.
 Primary command aliases:
   //cw
   //crankwatch
