@@ -56,6 +56,15 @@ Show all commands in-game:
   //cw help
 
 ==================================================
+LAYOUT SETTINGS
+==================================================
+View layout settings quickly:
+
+//cw layout
+
+Will display the main GUI settings to make adjustments easier.
+
+==================================================
 POSITIONING
 ==================================================
 
@@ -70,6 +79,7 @@ Notes:
 - Y controls vertical position.
 - You can also drag the overlay with the mouse.
 - Position saves automatically after dragging.
+
 
 ==================================================
 MAIN SIZE CONTROL
