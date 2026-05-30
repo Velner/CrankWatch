@@ -1,49 +1,49 @@
 _addon.name = 'CrankWatch'
 _addon.author = 'VelnerXI'
 --twitch.tv/VelnerXI -- Live starting 5:30 pm PT most days!
-_addon.version = '1.0.0'
+_addon.version = '1.0.2'
 _addon.commands = {'crankwatch', 'cw'}
 
 local texts = require('texts')
 local config = require('config')
 
 local defaults = {
-    center_x = 900,
-    center_y = 450,
+    center_x = 1475,
+    center_y = 850,
     ws_size = 36,
     dmg_size = 42,
     avg_size = 24,
-    flair_size = 30,
-    line_gap = 44,
-    avg_gap = 86,
-    flair_gap = 118,
+    flair_size = 32,
+    line_gap = 45,
+    avg_gap = 99,
+    flair_gap = 100,
     font = 'Highwind',
     stroke_width = 4,
     big_stroke_width = 5,
     pending_timeout = 1.25,
-    flair_duration = 0.85,
+    flair_duration = 2.5,
     fade_enabled = true,
     fade_in_duration = 0.30,
     hold_duration = 60.0,
-    fade_out_duration = 8.0,
+    fade_out_duration = 5,
     pop_enabled = true,
     pop_duration = 0.35,
     pop_bonus_size = 8,
     gradient_enabled = false,
-    flair_fade_duration = 0.85,
-    flair_shrink_size = 0,
+    flair_fade_duration = 1.5,
+    flair_shrink_size = 6,
     flair_float_distance = 32,
     flair_anchor_ratio = 0.72,
-    sc_anchor_ratio = 0.50,
-    flair_offset_y = 12,
+    sc_anchor_ratio = 0.48,
+    flair_offset_y = -6,
     whiff_shake_duration = 0.45,
     whiff_shake_strength = 6,
     sc_enabled = true,
     sc_window = 4.0,
-    sc_fade_duration = 4.50,
-    sc_float_distance = 32,
-    sc_gap = 118,
-    sc_size = 30,
+    sc_fade_duration = 4,
+    sc_float_distance = 28,
+    sc_gap = 68,
+    sc_size = 34,
     sc_offset_y = 32,
 }
 
@@ -1546,7 +1546,8 @@ windower.register_event('addon command', function(cmd, arg1, arg2)
             save_settings()
             windower.add_to_chat(200, '[CrankWatch] Center position set and saved: ' .. x .. ', ' .. y)
         else
-            windower.add_to_chat(200, '[CrankWatch] Usage: //cw pos 900 450')
+            windower.add_to_chat(200, '[CrankWatch] Current center position: ' .. tostring(settings.center_x) .. ', ' .. tostring(settings.center_y))
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw pos <x> <y>')
         end
 
     elseif cmd == 'size' then
@@ -1566,7 +1567,8 @@ windower.register_event('addon command', function(cmd, arg1, arg2)
 
             windower.add_to_chat(200, '[CrankWatch] Size saved: WS ' .. settings.ws_size .. ', damage ' .. settings.dmg_size)
         else
-            windower.add_to_chat(200, '[CrankWatch] Usage: //cw size 36')
+            windower.add_to_chat(200, '[CrankWatch] Current sizes: WS ' .. tostring(settings.ws_size) .. ', damage ' .. tostring(settings.dmg_size) .. ', avg ' .. tostring(settings.avg_size) .. ', flair ' .. tostring(settings.flair_size) .. ', SC ' .. tostring(settings.sc_size))
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw size <ws size>')
         end
 
     elseif cmd == 'gap' then
@@ -1578,7 +1580,8 @@ windower.register_event('addon command', function(cmd, arg1, arg2)
             save_settings()
             windower.add_to_chat(200, '[CrankWatch] Line gap saved: ' .. gap)
         else
-            windower.add_to_chat(200, '[CrankWatch] Usage: //cw gap 44')
+            windower.add_to_chat(200, '[CrankWatch] Current line gap: ' .. tostring(settings.line_gap))
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw gap <pixels>')
         end
 
     elseif cmd == 'avggap' then
@@ -1590,7 +1593,8 @@ windower.register_event('addon command', function(cmd, arg1, arg2)
             save_settings()
             windower.add_to_chat(200, '[CrankWatch] Average gap saved: ' .. gap)
         else
-            windower.add_to_chat(200, '[CrankWatch] Usage: //cw avggap 86')
+            windower.add_to_chat(200, '[CrankWatch] Current average gap: ' .. tostring(settings.avg_gap))
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw avggap <pixels>')
         end
 
     elseif cmd == 'flairgap' then
@@ -1602,7 +1606,8 @@ windower.register_event('addon command', function(cmd, arg1, arg2)
             save_settings()
             windower.add_to_chat(200, '[CrankWatch] Flair gap saved: ' .. gap)
         else
-            windower.add_to_chat(200, '[CrankWatch] Usage: //cw flairgap 88')
+            windower.add_to_chat(200, '[CrankWatch] Current flair gap: ' .. tostring(settings.flair_gap))
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw flairgap <pixels>')
         end
 
     elseif cmd == 'stroke' then
@@ -1615,7 +1620,8 @@ windower.register_event('addon command', function(cmd, arg1, arg2)
             save_settings()
             windower.add_to_chat(200, '[CrankWatch] Stroke width saved: ' .. width)
         else
-            windower.add_to_chat(200, '[CrankWatch] Usage: //cw stroke 4')
+            windower.add_to_chat(200, '[CrankWatch] Current stroke width: ' .. tostring(settings.stroke_width) .. ' / big ' .. tostring(settings.big_stroke_width))
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw stroke <width>')
         end
 
     elseif cmd == 'font' then
@@ -1627,7 +1633,8 @@ windower.register_event('addon command', function(cmd, arg1, arg2)
             save_settings()
             windower.add_to_chat(200, '[CrankWatch] Font saved: ' .. font)
         else
-            windower.add_to_chat(200, '[CrankWatch] Usage: //cw font Highwind')
+            windower.add_to_chat(200, '[CrankWatch] Current font: ' .. tostring(settings.font))
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw font <font name>')
         end
 
     elseif cmd == 'fade' then
@@ -1788,7 +1795,8 @@ windower.register_event('addon command', function(cmd, arg1, arg2)
             save_settings()
             windower.add_to_chat(200, '[CrankWatch] SC Bonus size saved: ' .. settings.sc_size)
         else
-            windower.add_to_chat(200, '[CrankWatch] Usage: //cw scsize 28')
+            windower.add_to_chat(200, '[CrankWatch] Current SC Bonus size: ' .. tostring(settings.sc_size))
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw scsize <size>')
         end
 
     elseif cmd == 'scfade' then
@@ -1799,7 +1807,8 @@ windower.register_event('addon command', function(cmd, arg1, arg2)
             save_settings()
             windower.add_to_chat(200, '[CrankWatch] SC fade duration saved: ' .. duration .. 's')
         else
-            windower.add_to_chat(200, '[CrankWatch] Usage: //cw scfade 4.5')
+            windower.add_to_chat(200, '[CrankWatch] Current SC fade duration: ' .. tostring(settings.sc_fade_duration) .. 's')
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw scfade <seconds>')
         end
 
     elseif cmd == 'scfloat' then
@@ -1810,7 +1819,8 @@ windower.register_event('addon command', function(cmd, arg1, arg2)
             save_settings()
             windower.add_to_chat(200, '[CrankWatch] SC float distance saved: ' .. distance)
         else
-            windower.add_to_chat(200, '[CrankWatch] Usage: //cw scfloat 32')
+            windower.add_to_chat(200, '[CrankWatch] Current SC float distance: ' .. tostring(settings.sc_float_distance))
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw scfloat <pixels>')
         end
 
     elseif cmd == 'scoffset' then
@@ -1822,8 +1832,18 @@ windower.register_event('addon command', function(cmd, arg1, arg2)
             save_settings()
             windower.add_to_chat(200, '[CrankWatch] SC vertical offset saved: ' .. offset)
         else
-            windower.add_to_chat(200, '[CrankWatch] Usage: //cw scoffset 18')
+            windower.add_to_chat(200, '[CrankWatch] Current SC vertical offset: ' .. tostring(settings.sc_offset_y))
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw scoffset <pixels>')
         end
+
+
+    elseif cmd == 'layout' then
+        windower.add_to_chat(200, '[CrankWatch] Layout: pos ' .. tostring(settings.center_x) .. ', ' .. tostring(settings.center_y)
+            .. ' | gap ' .. tostring(settings.line_gap)
+            .. ' | avggap ' .. tostring(settings.avg_gap)
+            .. ' | flairgap ' .. tostring(settings.flair_gap)
+            .. ' | scgap ' .. tostring(settings.sc_gap)
+            .. ' | font ' .. tostring(settings.font))
 
     elseif cmd == 'reset' or cmd == 'resetavg' then
         total_ws_damage = 0
@@ -1869,6 +1889,10 @@ windower.register_event('addon command', function(cmd, arg1, arg2)
         settings.flair_fade_duration = defaults.flair_fade_duration
         settings.flair_shrink_size = defaults.flair_shrink_size
         settings.flair_float_distance = defaults.flair_float_distance
+        settings.flair_anchor_ratio = defaults.flair_anchor_ratio
+        settings.sc_anchor_ratio = defaults.sc_anchor_ratio
+        settings.flair_offset_y = defaults.flair_offset_y
+        settings.sc_gap = defaults.sc_gap
 
         apply_all_visual_settings()
         save_settings()
@@ -1898,10 +1922,10 @@ windower.register_event('addon command', function(cmd, arg1, arg2)
         windower.add_to_chat(200, '[CrankWatch] Debug mode: ' .. tostring(debug_mode))
 
     elseif cmd == 'help' then
-        windower.add_to_chat(200, '[CrankWatch] Commands: //cw test | testwhite | testwhiff | testbig | testred | testmassive | testsc | testcrankedstreak | reset | show | hide | pos x y | size 36 | gap 44 | avggap 86 | flairgap 118 | stroke 4 | font Highwind | fade on|off | fadetime 60 8 | fadein 0.3 | pop on|off | popsize 8 | poptime 0.35 | gradient on|off | flairfade 1.5 | flairshrink 0 | flairfloat 32 | whiffshake 6 0.45 | scsize 28 | scfade 4.5 | scfloat 32 | scoffset 0 | reset | factoryreset | debug')
+        windower.add_to_chat(200, '[CrankWatch] Commands: //cw test | testwhite | testwhiff | testbig | testred | testmassive | testsc | testcrankedstreak | reset | show | hide | layout | pos x y | size 36 | gap 45 | avggap 99 | flairgap 100 | stroke 4 | font Highwind | fade on|off | fadetime 60 8 | fadein 0.3 | pop on|off | popsize 8 | poptime 0.35 | gradient on|off | flairfade 1.5 | flairshrink 0 | flairfloat 32 | whiffshake 6 0.45 | scsize 28 | scfade 4.5 | scfloat 32 | scoffset 0 | reset | factoryreset | debug')
 
     else
-        windower.add_to_chat(200, '[CrankWatch] Commands: //cw test | testwhite | testwhiff | testbig | testred | testmassive | testsc | testcrankedstreak | reset | show | hide | pos x y | size 36 | gap 44 | avggap 86 | flairgap 118 | stroke 4 | font Highwind | fade on|off | fadetime 60 8 | fadein 0.3 | pop on|off | popsize 8 | poptime 0.35 | gradient on|off | flairfade 1.5 | flairshrink 0 | flairfloat 32 | whiffshake 6 0.45 | scsize 28 | scfade 4.5 | scfloat 32 | scoffset 0 | reset | factoryreset | debug')
+        windower.add_to_chat(200, '[CrankWatch] Commands: //cw test | testwhite | testwhiff | testbig | testred | testmassive | testsc | testcrankedstreak | reset | show | hide | layout | pos x y | size 36 | gap 45 | avggap 99 | flairgap 100 | stroke 4 | font Highwind | fade on|off | fadetime 60 8 | fadein 0.3 | pop on|off | popsize 8 | poptime 0.35 | gradient on|off | flairfade 1.5 | flairshrink 0 | flairfloat 32 | whiffshake 6 0.45 | scsize 28 | scfade 4.5 | scfloat 32 | scoffset 0 | reset | factoryreset | debug')
     end
 end)
 
