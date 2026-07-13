@@ -1,11 +1,30 @@
 _addon.name = 'CrankWatch'
 _addon.author = 'VelnerXI'
 --twitch.tv/VelnerXI -- Live starting 5:30 pm PT most days!
-_addon.version = '1.0.2'
+_addon.version = '2.0'
 _addon.commands = {'crankwatch', 'cw'}
 
 local texts = require('texts')
 local config = require('config')
+pcall(require, 'luau')
+pcall(require, 'pack')
+local has_actions = pcall(require, 'actions')
+local ActionPacket = has_actions and _G.ActionPacket or nil
+local sc_packet_bar_enabled = ActionPacket and type(ActionPacket.open_listener) == 'function'
+
+-- Packet-confirmed skillchain message IDs, mirrored from Skillchains.
+-- Chain count must come from these add_effect packet messages, not from
+-- "a WS landed during GO" or the delayed chat-side SC damage line.
+local SKILLCHAIN_IDS = {
+    [288]=true,[289]=true,[290]=true,[291]=true,[292]=true,[293]=true,[294]=true,[295]=true,
+    [296]=true,[297]=true,[298]=true,[299]=true,[300]=true,[301]=true,
+    [385]=true,[386]=true,[387]=true,[388]=true,[389]=true,[390]=true,[391]=true,[392]=true,
+    [393]=true,[394]=true,[395]=true,[396]=true,[397]=true,
+    [767]=true,[768]=true,[769]=true,[770]=true,
+}
+local has_skills, skills = pcall(require, 'skills')
+if not has_skills then skills = nil end
+
 
 local defaults = {
     center_x = 1475,
@@ -29,7 +48,7 @@ local defaults = {
     pop_enabled = true,
     pop_duration = 0.35,
     pop_bonus_size = 8,
-    gradient_enabled = false,
+    auto_reset = true,
     flair_fade_duration = 1.5,
     flair_shrink_size = 6,
     flair_float_distance = 32,
@@ -45,9 +64,45 @@ local defaults = {
     sc_gap = 68,
     sc_size = 34,
     sc_offset_y = 32,
+    sc_bar_enabled = true,
+    sc_bar_gap = 132,
+    sc_bar_size = 18,
+    sc_bar_width = 18,
+    sc_bar_label_size = 15,
+    sc_bar_label_overlap = 20,
+    sc_bar_delay = 3.0,
+    sc_bar_max_step = 5,
+    sc_bar_font = 'Consolas',
+    sc_bar_shake_duration = 0.35,
+    sc_bar_shake_strength = 5,
+    sc_chain_counter_enabled = true,
+    sc_chain_counter_size = 18,
+    sc_chain_counter_gap = 6,
+    sc_chain_info_enabled = true,
+    sc_chain_info_size = 20,
+    sc_chain_info_gap = 175,
+    sc_chain_info_duration = 5.0,
+    sc_chain_info_offset_y = 4,
+    sc_chain_info_shake_duration = 0.75,
+    sc_chain_info_shake_strength = 8,
+    mb_enabled = true,
+    mb_size = 24,
+    mb_duration = 3.0,
+    mb_fade_in_duration = 0.15,
+    mb_fade_out_duration = 0.35,
+    mb_offset_x = 95,
+    mb_offset_y = -31,
+    mb_shake_duration = 0.50,
+    mb_shake_strength = 5,
+    -- Treat different WS packets on the same target inside this tiny window as
+    -- one simultaneous burst. Exact duplicates are still ignored, but different
+    -- alts/actions inside the burst can break/reset Chain instead of stacking it.
+    sc_bar_burst_window = 0.45,
 }
 
+
 local settings = config.load(defaults)
+if settings.auto_reset == nil then settings.auto_reset = true end
 
 local last_ws = '-'
 local last_dmg = '-'
@@ -55,10 +110,12 @@ local last_raw_dmg = 0
 local total_ws_damage = 0
 local total_ws_count = 0
 local avg_dmg = '-'
+local recent_ws = {}
+local avg_trend = ''
+local avg_trend_color = {255, 255, 255}
 local pending_ws = nil
 local pending_time = 0
 local debug_mode = false
-local dragging_anchor = false
 local flair_expire = 0
 local flair_visible = false
 local flair_fading = false
@@ -77,7 +134,6 @@ local whiff_shake_start = 0
 local pop_active = false
 local pop_start = 0
 local pop_base_size = 0
-local highlight_visible = false
 local layout_refresh_until = 0
 local cranked_streak = 0
 local cranked_flair_text = 'CRANKED!!!'
@@ -89,6 +145,39 @@ local sc_fade_start = 0
 local sc_fade_start_alpha = 255
 local sc_start_y = 0
 local sc_bonus_dmg = 0
+local sc_bar_active = false
+local sc_bar_open_time = 0
+local sc_bar_close_time = 0
+local sc_bar_total_window = 0
+local sc_bar_total_delay = 0
+local sc_bar_step = 1
+local sc_bar_last_ws_time = 0
+local sc_chain_step = 1
+local sc_bar_target_id = nil
+local sc_bar_last_action_id = nil
+local sc_bar_last_actor_id = nil
+local sc_bar_last_action_time = 0
+local sc_bar_damage_update_guard_until = 0
+local sc_bar_was_waiting = false
+local sc_bar_shake_start = 0
+local sc_chain_count = 0
+local sc_chain_counter_visible = false
+local sc_chain_info_visible = false
+local sc_chain_info_fading = false
+local sc_chain_info_fade_start = 0
+local sc_chain_info_expire = 0
+local sc_chain_info_prefix_value = ''
+local sc_chain_info_name_value = ''
+local sc_chain_info_elements_value = ''
+local sc_chain_info_shake_start = 0
+local sc_chain_info_color = {255, 255, 255}
+local mb_visible = false
+local mb_start_time = 0
+local mb_expire = 0
+local mb_value = ''
+local mb_pending_until = 0
+local mb_shake_start = 0
+
 
 -- Whitelist of player/automaton weapon skills from BG-Wiki's Weapon Skills category.
 -- This prevents job abilities, items, rolls, waltzes, jumps, etc. from being treated as a pending WS.
@@ -668,7 +757,7 @@ local function text_settings(size)
 
         flags = {
             bold = true,
-            draggable = true,
+            draggable = false,
             right = false,
             bottom = false,
         },
@@ -699,9 +788,17 @@ local dmg_text = texts.new('', text_settings(settings.dmg_size))
 local avg_text = texts.new('', text_settings(settings.avg_size))
 local avg_label_text = texts.new('', text_settings(settings.avg_size))
 local avg_value_text = texts.new('', text_settings(settings.avg_size))
+local avg_trend_text = texts.new('', text_settings(settings.avg_size))
 local sc_text = texts.new('', text_settings(settings.sc_size or settings.avg_size))
+local sc_bar_text = texts.new('', text_settings(settings.sc_bar_size or settings.avg_size))
+local sc_bar_label_text = texts.new('', text_settings(settings.sc_bar_label_size or 15))
+local sc_bar_status_text = texts.new('', text_settings(settings.sc_bar_label_size or 15))
+local sc_chain_counter_text = texts.new('', text_settings(settings.sc_chain_counter_size or 18))
+local sc_chain_info_text = texts.new('', text_settings(settings.sc_chain_info_size or 20))
+local sc_chain_info_name_text = texts.new('', text_settings(settings.sc_chain_info_size or 20))
+local sc_chain_info_elements_text = texts.new('', text_settings(settings.sc_chain_info_size or 20))
+local mb_text = texts.new('', text_settings(settings.mb_size or 18))
 local flair_text = texts.new('', text_settings(settings.flair_size))
-local highlight_text = texts.new('', text_settings(settings.dmg_size))
 
 -- Start hidden on addon load. The overlay appears after the first tracked WS,
 -- or manually with //cw show.
@@ -710,9 +807,17 @@ dmg_text:hide()
 avg_text:hide()
 avg_label_text:hide()
 avg_value_text:hide()
+avg_trend_text:hide()
 sc_text:hide()
+sc_bar_text:hide()
+sc_bar_label_text:hide()
+sc_bar_status_text:hide()
+sc_chain_counter_text:hide()
+sc_chain_info_text:hide()
+sc_chain_info_name_text:hide()
+sc_chain_info_elements_text:hide()
+mb_text:hide()
 flair_text:hide()
-highlight_text:hide()
 
 local function clamp(v, lo, hi)
     if v < lo then return lo end
@@ -729,16 +834,28 @@ local function apply_alpha(alpha)
     avg_text:alpha(alpha)
     avg_label_text:alpha(alpha)
     avg_value_text:alpha(alpha)
+    avg_trend_text:alpha(alpha)
     if sc_visible and not sc_fading then
         sc_text:alpha(alpha)
     end
+    if sc_bar_active then
+        sc_bar_text:alpha(alpha)
+        sc_bar_label_text:alpha(alpha)
+        sc_bar_status_text:alpha(alpha)
+    end
+    if sc_chain_counter_visible then
+        sc_chain_counter_text:alpha(alpha)
+    end
+    if sc_chain_info_visible and not sc_chain_info_fading then
+        sc_chain_info_text:alpha(alpha)
+        sc_chain_info_name_text:alpha(alpha)
+        sc_chain_info_elements_text:alpha(alpha)
+    end
+    if mb_visible then
+        mb_text:alpha(alpha)
+    end
     if not flair_fading then
         flair_text:alpha(alpha)
-    end
-    if settings.gradient_enabled then
-        highlight_text:alpha(math.floor(alpha * 0.35))
-    else
-        highlight_text:alpha(0)
     end
 
     ws_text:stroke_alpha(alpha)
@@ -746,13 +863,29 @@ local function apply_alpha(alpha)
     avg_text:stroke_alpha(alpha)
     avg_label_text:stroke_alpha(alpha)
     avg_value_text:stroke_alpha(alpha)
+    avg_trend_text:stroke_alpha(alpha)
     if sc_visible and not sc_fading then
         sc_text:stroke_alpha(alpha)
+    end
+    if sc_bar_active then
+        sc_bar_text:stroke_alpha(alpha)
+        sc_bar_label_text:stroke_alpha(alpha)
+        sc_bar_status_text:stroke_alpha(alpha)
+    end
+    if sc_chain_counter_visible then
+        sc_chain_counter_text:stroke_alpha(alpha)
+    end
+    if sc_chain_info_visible and not sc_chain_info_fading then
+        sc_chain_info_text:stroke_alpha(alpha)
+        sc_chain_info_name_text:stroke_alpha(alpha)
+        sc_chain_info_elements_text:stroke_alpha(alpha)
+    end
+    if mb_visible then
+        mb_text:stroke_alpha(alpha)
     end
     if not flair_fading then
         flair_text:stroke_alpha(alpha)
     end
-    highlight_text:stroke_alpha(0)
 
     if alpha <= 0 then
         ws_text:hide()
@@ -760,25 +893,51 @@ local function apply_alpha(alpha)
         avg_text:hide()
         avg_label_text:hide()
         avg_value_text:hide()
+        avg_trend_text:hide()
         sc_text:hide()
+        sc_bar_text:hide()
+        sc_bar_label_text:hide()
+        sc_bar_status_text:hide()
+        sc_chain_counter_text:hide()
+        sc_chain_info_text:hide()
+        sc_chain_info_name_text:hide()
+        sc_chain_info_elements_text:hide()
+        mb_text:hide()
         flair_text:hide()
-        highlight_text:hide()
-    else
+            else
         ws_text:show()
         dmg_text:show()
         avg_text:show()
         avg_label_text:show()
         avg_value_text:show()
+        if avg_trend ~= '' then
+            avg_trend_text:show()
+        else
+            avg_trend_text:hide()
+        end
         if sc_visible then
             sc_text:show()
         end
+        if sc_bar_active then
+            sc_bar_text:show()
+            sc_bar_label_text:show()
+            sc_bar_status_text:show()
+        end
+        if sc_chain_counter_visible then
+            sc_chain_counter_text:show()
+        end
+        if sc_chain_info_visible then
+            sc_chain_info_text:show()
+            sc_chain_info_name_text:show()
+            if sc_chain_info_elements_value ~= '' then sc_chain_info_elements_text:show() else sc_chain_info_elements_text:hide() end
+        end
+        if mb_visible then
+            mb_text:show()
+        else
+            mb_text:hide()
+        end
         if flair_visible then
             flair_text:show()
-        end
-        if highlight_visible and settings.gradient_enabled then
-            highlight_text:show()
-        else
-            highlight_text:hide()
         end
     end
 end
@@ -799,7 +958,24 @@ local function start_damage_fade_in()
     avg_text:show()
     avg_label_text:show()
     avg_value_text:show()
+    if avg_trend ~= '' then avg_trend_text:show() else avg_trend_text:hide() end
     if sc_visible then sc_text:show() end
+    if sc_bar_active then
+        sc_bar_text:show()
+        sc_bar_label_text:show()
+        sc_bar_status_text:show()
+    end
+    if sc_chain_counter_visible then
+        sc_chain_counter_text:show()
+    end
+    if sc_chain_info_visible then
+        sc_chain_info_text:show()
+        sc_chain_info_name_text:show()
+        if sc_chain_info_elements_value ~= '' then sc_chain_info_elements_text:show() else sc_chain_info_elements_text:hide() end
+    end
+    if mb_visible then
+        mb_text:show()
+    end
 
     ws_text:alpha(255)
     ws_text:stroke_alpha(255)
@@ -810,18 +986,40 @@ local function start_damage_fade_in()
     avg_label_text:stroke_alpha(255)
     avg_value_text:alpha(255)
     avg_value_text:stroke_alpha(255)
+    avg_trend_text:alpha(255)
+    avg_trend_text:stroke_alpha(255)
     if sc_visible and not sc_fading then
         sc_text:alpha(255)
         sc_text:stroke_alpha(255)
+    end
+    if sc_bar_active then
+        sc_bar_text:alpha(255)
+        sc_bar_text:stroke_alpha(255)
+        sc_bar_label_text:alpha(255)
+        sc_bar_label_text:stroke_alpha(255)
+        sc_bar_status_text:alpha(255)
+        sc_bar_status_text:stroke_alpha(255)
+    end
+    if sc_chain_counter_visible then
+        sc_chain_counter_text:alpha(255)
+        sc_chain_counter_text:stroke_alpha(255)
+    end
+    if sc_chain_info_visible and not sc_chain_info_fading then
+        sc_chain_info_text:alpha(255)
+        sc_chain_info_text:stroke_alpha(255)
+        sc_chain_info_name_text:alpha(255)
+        sc_chain_info_name_text:stroke_alpha(255)
+        sc_chain_info_elements_text:alpha(255)
+        sc_chain_info_elements_text:stroke_alpha(255)
+    end
+    if mb_visible then
+        mb_text:alpha(255)
+        mb_text:stroke_alpha(255)
     end
 
     dmg_text:alpha(1)
     dmg_text:stroke_alpha(1)
 
-    if highlight_visible and settings.gradient_enabled then
-        highlight_text:alpha(1)
-        highlight_text:show()
-    end
 
     if flair_visible then
         flair_text:show()
@@ -857,7 +1055,7 @@ local function get_damage_style(dmg)
     dmg = tonumber(dmg) or 0
 
     if dmg == 99999 then
-        return 255, 70, 70, settings.big_stroke_width, cranked_flair_text
+        return 180, 100, 255, settings.big_stroke_width, cranked_flair_text
     elseif dmg >= 80000 then
         return 255, 70, 70, settings.big_stroke_width, 'MASSIVE HIT!!'
     elseif dmg >= 50000 then
@@ -889,8 +1087,647 @@ local function position_avg_line()
     local label_width = safe_extents(avg_label_text)
     avg_value_text:pos(math.floor(ws_x + label_width), y)
 
+    local value_width = safe_extents(avg_value_text)
+    avg_trend_text:pos(math.floor(ws_x + label_width + value_width + 8), y - 5)
+
     -- Legacy avg_text is kept hidden/unused so older settings/layout logic stays harmless.
     avg_text:hide()
+end
+
+
+local position_sc_chain_counter
+
+local function position_sc_bar_line()
+    local y = settings.center_y + (settings.sc_bar_gap or ((settings.avg_gap or 99) + 34))
+    local bar_width = safe_extents(sc_bar_text)
+
+    -- Keep the bar left-aligned with the Last WS line instead of centered
+    -- under the whole overlay.
+    local x = ws_text:pos()
+
+    -- Tiny shake when the bar changes from WAIT to GO.
+    local shake_x = 0
+    if sc_bar_shake_start and sc_bar_shake_start > 0 then
+        local t = (os.clock() - sc_bar_shake_start) / math.max(settings.sc_bar_shake_duration or 0.35, 0.01)
+        if t >= 1 then
+            sc_bar_shake_start = 0
+        else
+            shake_x = math.floor(math.sin(t * 60) * (settings.sc_bar_shake_strength or 5) * (1 - t))
+        end
+    end
+
+    x = math.floor(x + shake_x)
+    sc_bar_text:pos(x, y)
+
+    -- Center the combined "Bonus Chance:" + status text across the actual bar width.
+    local label_width = safe_extents(sc_bar_label_text)
+    local status_width = safe_extents(sc_bar_status_text)
+    local total_width = label_width + status_width
+    local label_x = math.floor(x + (bar_width / 2) - (total_width / 2))
+    local label_y = math.floor(y + (settings.sc_bar_label_overlap or 20))
+
+    sc_bar_label_text:pos(label_x, label_y)
+    sc_bar_status_text:pos(math.floor(label_x + label_width), label_y)
+
+    if sc_chain_counter_visible then
+        position_sc_chain_counter()
+    end
+end
+
+
+local function position_mb_text()
+    local x, y
+    local mb_width = safe_extents(mb_text)
+
+    if sc_bar_active then
+        -- Put MB directly over the SC bar itself, centered on the bar.
+        local bar_x, bar_y = sc_bar_text:pos()
+        local bar_width = safe_extents(sc_bar_text)
+        x = math.floor(bar_x + (bar_width / 2) - (mb_width / 2) + (settings.mb_offset_x or 0))
+        y = math.floor(bar_y + (settings.mb_offset_y or -4))
+    else
+        -- Test/fallback location: approximate the SC bar lane, but a little higher
+        -- than the old fallback so //cw testmb does not appear far below the HUD.
+        x = math.floor(settings.center_x - (mb_width / 2) + (settings.mb_offset_x or 0))
+        y = math.floor(settings.center_y + (settings.sc_bar_gap or ((settings.avg_gap or 99) + 34)) + (settings.mb_offset_y or -4))
+    end
+
+    local shake_x = 0
+    if mb_shake_start and mb_shake_start > 0 then
+        local t = (os.clock() - mb_shake_start) / math.max(settings.mb_shake_duration or 0.50, 0.01)
+        if t >= 1 then
+            mb_shake_start = 0
+        else
+            shake_x = math.floor(math.sin(t * 80) * (settings.mb_shake_strength or 5) * (1 - t))
+        end
+    end
+
+    mb_text:pos(x + shake_x, y)
+end
+
+position_sc_chain_counter = function()
+    if not settings.sc_bar_enabled or not settings.sc_chain_counter_enabled then return end
+
+    local bar_x, bar_y = sc_bar_text:pos()
+    local label_x, label_y = sc_bar_label_text:pos()
+    local label_width = safe_extents(sc_bar_label_text)
+    local status_width = safe_extents(sc_bar_status_text)
+
+    -- Put Chain just to the right of "Bonus Chance: GO!!" / "Wait. . .",
+    -- still sitting in the same lower-overlap lane on the SC bar.
+    -- Positive values move it farther right; negative values pull it closer.
+    local x = math.floor(label_x + label_width + status_width + (settings.sc_chain_counter_gap or 6))
+    local y = math.floor(label_y)
+    sc_chain_counter_text:pos(x, y)
+end
+
+
+local main_overlay_visible
+
+local function normalize_sc_name(name)
+    name = tostring(name or '')
+    name = name:gsub('_', ' '):gsub('^%s+', ''):gsub('%s+$', '')
+    if name == '' or name == 'unknown' then
+        return 'Skillchain'
+    end
+    return name
+end
+
+local function sc_name_from_add_effect(add_eff)
+    if not add_eff then return 'Skillchain' end
+    local name = add_eff.animation or add_eff.name or add_eff.param or add_eff.message
+    return normalize_sc_name(name)
+end
+
+local SC_ELEMENT_COLORS = {
+    Fire     = {255,  70,  70},   -- Red
+    Ice      = {120, 220, 255},   -- Light Blue
+    Water    = { 45,  95, 255},   -- Dark Blue
+    Darkness = {180, 100, 255},   -- Purple
+    Light    = {245, 245, 220},   -- Pearl
+    Thunder  = {205, 145, 255},   -- Light Purple
+    Wind     = {100, 255, 100},   -- Green
+    Earth    = {230, 210,  80},   -- Bright yellow with slight brown tinge
+}
+
+local SC_ELEMENTS = {
+    Liquefaction  = "Fire",
+    Induration    = "Ice",
+    Reverberation = "Water",
+    Detonation    = "Wind",
+    Scission      = "Earth",
+    Impaction     = "Thunder",
+    Transfixion   = "Light",
+    Compression   = "Dark.",
+
+    Fusion        = "Fire/Light",
+    Fragmentation = "Wind/Thund.",
+    Distortion    = "Ice/Water",
+    Gravitation   = "Earth/Dark.",
+
+    Light         = "Fire/Wind/Thund./Light",
+    Darkness      = "Earth/Water/Ice/Dark.",
+
+    Radiance      = "Fire/Wind/Thund./Light",
+    Umbra         = "Earth/Water/Ice/Dark.",
+}
+
+local function sc_elements_for_name(name)
+    -- The packet/add_effect name can vary by casing, spacing, or include extra text.
+    -- Match the same flexible way as the color function instead of requiring
+    -- an exact table key like "Fusion".
+    local clean = normalize_sc_name(name):gsub('%s*%b()%s*$', '')
+    local exact = SC_ELEMENTS[clean]
+    if exact then return exact end
+
+    local key = tostring(clean or ''):lower():gsub('%s+', '')
+
+    -- Level 4 first, so Radiance/Umbra are not swallowed by Light/Darkness checks.
+    if key:find('radiance') then return SC_ELEMENTS.Radiance end
+    if key:find('umbra') then return SC_ELEMENTS.Umbra end
+
+    -- Level 2 before Level 3/1 broad words.
+    if key:find('fusion') then return SC_ELEMENTS.Fusion end
+    if key:find('fragmentation') then return SC_ELEMENTS.Fragmentation end
+    if key:find('distortion') then return SC_ELEMENTS.Distortion end
+    if key:find('gravitation') then return SC_ELEMENTS.Gravitation end
+
+    -- Level 1
+    if key:find('liquefaction') then return SC_ELEMENTS.Liquefaction end
+    if key:find('induration') then return SC_ELEMENTS.Induration end
+    if key:find('reverberation') then return SC_ELEMENTS.Reverberation end
+    if key:find('detonation') then return SC_ELEMENTS.Detonation end
+    if key:find('scission') then return SC_ELEMENTS.Scission end
+    if key:find('impaction') then return SC_ELEMENTS.Impaction end
+    if key:find('transfixion') then return SC_ELEMENTS.Transfixion end
+    if key:find('compression') then return SC_ELEMENTS.Compression end
+
+    -- Level 3 last because these names are broad.
+    if key:find('darkness') then return SC_ELEMENTS.Darkness end
+    if key:find('light') then return SC_ELEMENTS.Light end
+
+    return nil
+end
+
+local function blend_sc_colors(...)
+    local names = {...}
+    local r, g, b, count = 0, 0, 0, 0
+
+    for _, name in ipairs(names) do
+        local c = SC_ELEMENT_COLORS[name]
+        if c then
+            r = r + c[1]
+            g = g + c[2]
+            b = b + c[3]
+            count = count + 1
+        end
+    end
+
+    if count <= 0 then
+        return 255, 255, 255
+    end
+
+    return math.floor(r / count), math.floor(g / count), math.floor(b / count)
+end
+
+local function sc_color_for_name(name)
+    local key = tostring(name or ''):lower():gsub('%s+', '')
+
+    -- Level 3 / 4
+    if key:find('radiance') then return unpack(SC_ELEMENT_COLORS.Light) end
+    if key:find('umbra') then return unpack(SC_ELEMENT_COLORS.Darkness) end
+    if key:find('darkness') then return unpack(SC_ELEMENT_COLORS.Darkness) end
+    if key:find('light') then return unpack(SC_ELEMENT_COLORS.Light) end
+
+    -- Level 2 multi-element skillchains. Text objects cannot gradient,
+    -- so these use a blended version of the requested element colors.
+    if key:find('fusion') then return blend_sc_colors('Fire', 'Light') end
+    if key:find('fragmentation') then return blend_sc_colors('Wind', 'Thunder') end
+    if key:find('distortion') then return blend_sc_colors('Ice', 'Water') end
+    if key:find('gravitation') then return blend_sc_colors('Earth', 'Darkness') end
+
+    -- Level 1
+    if key:find('liquefaction') then return unpack(SC_ELEMENT_COLORS.Fire) end
+    if key:find('scission') then return unpack(SC_ELEMENT_COLORS.Earth) end
+    if key:find('reverberation') then return unpack(SC_ELEMENT_COLORS.Water) end
+    if key:find('detonation') then return unpack(SC_ELEMENT_COLORS.Wind) end
+    if key:find('induration') then return unpack(SC_ELEMENT_COLORS.Ice) end
+    if key:find('impaction') then return unpack(SC_ELEMENT_COLORS.Thunder) end
+    if key:find('transfixion') then return unpack(SC_ELEMENT_COLORS.Light) end
+    if key:find('compression') then return unpack(SC_ELEMENT_COLORS.Darkness) end
+
+    return 255, 255, 255
+end
+
+local function position_sc_chain_info()
+    local x = ws_text:pos()
+    local y = settings.center_y + (settings.sc_chain_info_gap or 175) + (settings.sc_chain_info_offset_y or 4)
+
+    -- Radiance / Umbra impact shake. Applies to the whole Chain Info line:
+    -- prefix, colored skillchain name, and white element suffix.
+    local shake_x = 0
+    if sc_chain_info_shake_start and sc_chain_info_shake_start > 0 then
+        local t = (os.clock() - sc_chain_info_shake_start) / math.max(settings.sc_chain_info_shake_duration or 0.75, 0.01)
+        if t >= 1 then
+            sc_chain_info_shake_start = 0
+        else
+            shake_x = math.floor(math.sin(t * 80) * (settings.sc_chain_info_shake_strength or 8) * (1 - t))
+        end
+    end
+
+    x = math.floor(x + shake_x)
+    sc_chain_info_text:pos(x, y)
+
+    local prefix_width = safe_extents(sc_chain_info_text)
+    local name_x = math.floor(x + prefix_width + 4)
+    sc_chain_info_name_text:pos(name_x, y)
+
+    local name_width = safe_extents(sc_chain_info_name_text)
+    sc_chain_info_elements_text:pos(math.floor(name_x + name_width), y)
+end
+local function hide_sc_chain_info()
+    sc_chain_info_visible = false
+    sc_chain_info_fading = false
+    sc_chain_info_fade_start = 0
+    sc_chain_info_expire = 0
+    sc_chain_info_text:hide()
+    sc_chain_info_name_text:hide()
+    sc_chain_info_elements_text:hide()
+end
+
+local function start_sc_chain_info_fade()
+    if sc_chain_info_visible and not sc_chain_info_fading then
+        -- Chain info should fade as soon as the live Chain counter disappears.
+        sc_chain_info_expire = 0
+        sc_chain_info_fading = true
+        sc_chain_info_fade_start = os.clock()
+    end
+end
+
+-- Compatibility aliases for existing call sites.
+local function start_sc_chain_info_break_fade()
+    start_sc_chain_info_fade()
+end
+
+local function start_sc_chain_info_timeout_fade()
+    start_sc_chain_info_fade()
+end
+
+local function show_sc_chain_info(chain_num, sc_name)
+    if not settings.sc_bar_enabled or not settings.sc_chain_info_enabled then return end
+    if not main_overlay_visible() then return end
+
+    chain_num = math.max(1, tonumber(chain_num) or 1)
+    sc_name = normalize_sc_name(sc_name)
+    local r, g, b = sc_color_for_name(sc_name)
+
+    sc_chain_info_prefix_value = 'Chain ' .. tostring(chain_num) .. ':'
+    local clean_sc_name = sc_name:gsub('%s*%b()%s*$', '')
+    local elements = sc_elements_for_name(clean_sc_name)
+
+    local clean_key = tostring(clean_sc_name or ''):lower():gsub('%s+', '')
+    if clean_key:find('radiance') or clean_key:find('umbra') then
+        sc_chain_info_shake_start = os.clock()
+    else
+        sc_chain_info_shake_start = 0
+    end
+
+    sc_chain_info_name_value = clean_sc_name
+    if elements then
+        sc_chain_info_elements_value = string.format(' (%s)', elements)
+    else
+        sc_chain_info_elements_value = ''
+    end
+    sc_chain_info_color = {r, g, b}
+
+    sc_chain_info_text:text(sc_chain_info_prefix_value)
+    sc_chain_info_text:font(settings.font or 'Highwind')
+    sc_chain_info_text:size(settings.sc_chain_info_size or 20)
+    sc_chain_info_text:color(255, 255, 255)
+    sc_chain_info_text:stroke_width(settings.stroke_width)
+    sc_chain_info_text:alpha(alpha_current > 0 and alpha_current or 255)
+    sc_chain_info_text:stroke_alpha(alpha_current > 0 and alpha_current or 255)
+
+    sc_chain_info_name_text:text(sc_chain_info_name_value)
+    sc_chain_info_name_text:font(settings.font or 'Highwind')
+    sc_chain_info_name_text:size(settings.sc_chain_info_size or 20)
+    sc_chain_info_name_text:color(r, g, b)
+    sc_chain_info_name_text:stroke_width(settings.stroke_width)
+    sc_chain_info_name_text:alpha(alpha_current > 0 and alpha_current or 255)
+    sc_chain_info_name_text:stroke_alpha(alpha_current > 0 and alpha_current or 255)
+
+    sc_chain_info_elements_text:text(sc_chain_info_elements_value)
+    sc_chain_info_elements_text:font(settings.font or 'Highwind')
+    sc_chain_info_elements_text:size(settings.sc_chain_info_size or 20)
+    sc_chain_info_elements_text:color(255, 255, 255)
+    sc_chain_info_elements_text:stroke_width(settings.stroke_width)
+    sc_chain_info_elements_text:alpha(alpha_current > 0 and alpha_current or 255)
+    sc_chain_info_elements_text:stroke_alpha(alpha_current > 0 and alpha_current or 255)
+
+    sc_chain_info_visible = true
+    sc_chain_info_fading = false
+    sc_chain_info_fade_start = 0
+    sc_chain_info_expire = 0
+
+    position_sc_chain_info()
+    sc_chain_info_text:show()
+    sc_chain_info_name_text:show()
+    if sc_chain_info_elements_value ~= '' then sc_chain_info_elements_text:show() else sc_chain_info_elements_text:hide() end
+end
+
+main_overlay_visible = function()
+    -- The SC bar should not summon CrankWatch by itself.
+    -- It should only display once CrankWatch is already visible or fading in
+    -- because the Last WS / damage GUI updated.
+    return fade_state ~= 'hidden' and alpha_current > 0
+end
+
+local function make_sc_bar(percent)
+    local width = math.max(6, math.floor(settings.sc_bar_width or 34))
+    percent = clamp(percent or 0, 0, 1)
+    local filled = math.floor((width * percent) + 0.5)
+    local empty = width - filled
+    return string.rep('█', filled) .. string.rep('░', empty)
+end
+
+local stop_sc_bar
+
+local function start_sc_bar_from_time(base_time, step, target_id, action_id, actor_id, delay_override)
+    if not settings.sc_bar_enabled then return end
+
+    -- When packet listening is available, never create a targetless bar.
+    -- Targetless bars are the main reason the countdown can linger after a mob dies.
+    if sc_packet_bar_enabled and not target_id then return end
+
+    if target_id then
+        local mob = windower.ffxi.get_mob_by_id(target_id)
+        if not mob or (tonumber(mob.hpp) or 0) <= 0 then
+            stop_sc_bar(true)
+            return
+        end
+    end
+
+    base_time = base_time or os.clock()
+    step = clamp(math.floor(step or 1), 1, settings.sc_bar_max_step or 5)
+
+    local delay = tonumber(delay_override) or tonumber(settings.sc_bar_delay) or 3.0
+    local duration = math.max(1.0, 8.0 - step)
+
+    sc_bar_step = step
+    sc_bar_last_ws_time = base_time
+    sc_bar_target_id = target_id or sc_bar_target_id
+    sc_bar_last_action_id = action_id or sc_bar_last_action_id
+    sc_bar_last_actor_id = actor_id or sc_bar_last_actor_id
+    sc_bar_last_action_time = base_time
+    sc_bar_open_time = base_time + delay
+    sc_bar_close_time = sc_bar_open_time + duration
+    sc_bar_total_window = duration
+    sc_bar_total_delay = math.max(delay, 0.01)
+    sc_bar_active = true
+
+    sc_bar_text:font(settings.sc_bar_font or 'Consolas')
+    sc_bar_text:size(settings.sc_bar_size or settings.avg_size)
+    sc_bar_text:stroke_width(settings.stroke_width)
+    sc_bar_text:alpha(alpha_current > 0 and alpha_current or 255)
+    sc_bar_text:stroke_alpha(alpha_current > 0 and alpha_current or 255)
+
+    sc_bar_label_text:font(settings.font or 'Highwind')
+    sc_bar_label_text:size(settings.sc_bar_label_size or 15)
+    sc_bar_label_text:stroke_width(settings.stroke_width)
+    sc_bar_label_text:alpha(alpha_current > 0 and alpha_current or 255)
+    sc_bar_label_text:stroke_alpha(alpha_current > 0 and alpha_current or 255)
+
+    sc_bar_status_text:font(settings.font or 'Highwind')
+    sc_bar_status_text:size(settings.sc_bar_label_size or 15)
+    sc_bar_status_text:stroke_width(settings.stroke_width)
+    sc_bar_status_text:alpha(alpha_current > 0 and alpha_current or 255)
+    sc_bar_status_text:stroke_alpha(alpha_current > 0 and alpha_current or 255)
+
+    sc_chain_counter_text:font(settings.font or 'Highwind')
+    sc_chain_counter_text:size(settings.sc_chain_counter_size or 18)
+    sc_chain_counter_text:stroke_width(settings.stroke_width)
+    sc_chain_counter_text:alpha(alpha_current > 0 and alpha_current or 255)
+    sc_chain_counter_text:stroke_alpha(alpha_current > 0 and alpha_current or 255)
+
+    sc_bar_was_waiting = true
+    sc_bar_shake_start = 0
+
+    if main_overlay_visible() then
+        sc_bar_text:show()
+        sc_bar_label_text:show()
+        sc_bar_status_text:show()
+    else
+        sc_bar_text:hide()
+        sc_bar_label_text:hide()
+        sc_bar_status_text:hide()
+        sc_chain_counter_text:hide()
+    end
+end
+
+local function test_sc_bar_default()
+    if not settings.sc_bar_enabled then return end
+
+    local now = os.clock()
+    local delay = tonumber(settings.sc_bar_delay) or 3.0
+    local duration = math.max(1.0, 8.0 - 1)
+
+    sc_bar_step = 1
+    sc_bar_last_ws_time = now
+    sc_bar_target_id = nil
+    sc_bar_last_action_id = nil
+    sc_bar_last_actor_id = nil
+    sc_bar_last_action_time = now
+    sc_bar_open_time = now + delay
+    sc_bar_close_time = sc_bar_open_time + duration
+    sc_bar_total_window = duration
+    sc_bar_total_delay = math.max(delay, 0.01)
+    sc_bar_active = true
+    -- Test command should visibly display the bar even without a real WS update.
+    fade_state = 'visible'
+    alpha_current = 255
+    last_ws_time = os.clock()
+
+    ws_text:show()
+    dmg_text:show()
+    avg_label_text:show()
+    avg_value_text:show()
+
+    ws_text:alpha(255)
+    ws_text:stroke_alpha(255)
+    dmg_text:alpha(255)
+    dmg_text:stroke_alpha(255)
+    avg_label_text:alpha(255)
+    avg_label_text:stroke_alpha(255)
+    avg_value_text:alpha(255)
+    avg_value_text:stroke_alpha(255)
+
+
+    sc_bar_text:font(settings.sc_bar_font or 'Consolas')
+    sc_bar_text:size(settings.sc_bar_size or settings.avg_size)
+    sc_bar_text:stroke_width(settings.stroke_width)
+    sc_bar_text:alpha(alpha_current > 0 and alpha_current or 255)
+    sc_bar_text:stroke_alpha(alpha_current > 0 and alpha_current or 255)
+
+    sc_bar_label_text:font(settings.font or 'Highwind')
+    sc_bar_label_text:size(settings.sc_bar_label_size or 15)
+    sc_bar_label_text:stroke_width(settings.stroke_width)
+    sc_bar_label_text:alpha(alpha_current > 0 and alpha_current or 255)
+    sc_bar_label_text:stroke_alpha(alpha_current > 0 and alpha_current or 255)
+
+    sc_bar_status_text:font(settings.font or 'Highwind')
+    sc_bar_status_text:size(settings.sc_bar_label_size or 15)
+    sc_bar_status_text:stroke_width(settings.stroke_width)
+    sc_bar_status_text:alpha(alpha_current > 0 and alpha_current or 255)
+    sc_bar_status_text:stroke_alpha(alpha_current > 0 and alpha_current or 255)
+
+    sc_chain_counter_text:font(settings.font or 'Highwind')
+    sc_chain_counter_text:size(settings.sc_chain_counter_size or 18)
+    sc_chain_counter_text:stroke_width(settings.stroke_width)
+    sc_chain_counter_text:alpha(alpha_current > 0 and alpha_current or 255)
+    sc_chain_counter_text:stroke_alpha(alpha_current > 0 and alpha_current or 255)
+
+    sc_bar_was_waiting = true
+    sc_bar_shake_start = 0
+
+    sc_bar_text:show()
+    sc_bar_label_text:show()
+    sc_bar_status_text:show()
+
+    update_display()
+    request_layout_refresh(0.45)
+end
+
+stop_sc_bar = function(reset_step, reason)
+    sc_bar_active = false
+    sc_bar_open_time = 0
+    sc_bar_close_time = 0
+    sc_bar_total_window = 0
+    sc_bar_total_delay = 0
+    sc_bar_target_id = nil
+    sc_bar_last_action_id = nil
+    sc_bar_last_actor_id = nil
+    sc_bar_last_action_time = 0
+    sc_bar_damage_update_guard_until = 0
+    sc_bar_was_waiting = false
+    sc_bar_shake_start = 0
+    sc_bar_text:hide()
+    sc_bar_label_text:hide()
+    sc_bar_status_text:hide()
+    if reset_step then
+        sc_chain_step = 1
+        sc_bar_step = 1
+        sc_chain_count = 0
+        sc_chain_counter_visible = false
+        sc_chain_counter_text:hide()
+        start_sc_chain_info_fade()
+    end
+end
+
+
+local function get_current_battle_target_id()
+    local targ = windower.ffxi.get_mob_by_target('t') or windower.ffxi.get_mob_by_target('bt')
+    return targ and targ.id or nil
+end
+
+local function is_current_battle_target_id(target_id)
+    target_id = tonumber(target_id)
+    if not target_id then return false end
+
+    local current_id = tonumber(get_current_battle_target_id())
+    return current_id ~= nil and current_id == target_id
+end
+
+local function stop_sc_bar_if_target_changed()
+    if not sc_bar_active or not sc_bar_target_id then return false end
+
+    if not is_current_battle_target_id(sc_bar_target_id) then
+        stop_sc_bar(true, 'target_changed')
+        sc_window_until = 0
+        sc_armed = false
+        return true
+    end
+
+    return false
+end
+
+local function stop_sc_bar_if_target_dead()
+    if not sc_bar_active or not sc_bar_target_id then return false end
+
+    local mob = windower.ffxi.get_mob_by_id(sc_bar_target_id)
+    if not mob or (tonumber(mob.hpp) or 0) <= 0 then
+        stop_sc_bar(true)
+        sc_window_until = 0
+        sc_armed = false
+        return true
+    end
+
+    return false
+end
+
+local function update_sc_bar()
+    if not sc_bar_active then return end
+    if stop_sc_bar_if_target_changed() then return end
+    if stop_sc_bar_if_target_dead() then return end
+
+    local now = os.clock()
+    if now >= sc_bar_close_time then
+        stop_sc_bar(true, 'timeout')
+        return
+    end
+
+    if now < sc_bar_open_time then
+        local wait_remaining = sc_bar_open_time - now
+        local wait_percent = wait_remaining / math.max(sc_bar_total_delay, 0.01)
+        sc_bar_was_waiting = true
+        sc_bar_text:color(255, 70, 70)
+        sc_bar_text:text(make_sc_bar(wait_percent))
+        sc_bar_label_text:color(255, 255, 255)
+        sc_bar_label_text:text('SC Window: ')
+        sc_bar_status_text:color(255, 40, 40)
+        sc_bar_status_text:text('Wait. . .')
+    else
+        local remaining = sc_bar_close_time - now
+        local percent = remaining / math.max(sc_bar_total_window, 0.01)
+        if sc_bar_was_waiting then
+            sc_bar_was_waiting = false
+            sc_bar_shake_start = os.clock()
+        end
+        sc_bar_text:color(80, 255, 120)
+        sc_bar_text:text(make_sc_bar(percent))
+        sc_bar_label_text:color(255, 255, 255)
+        sc_bar_label_text:text('SC Window: ')
+        sc_bar_status_text:color(80, 255, 80)
+        sc_bar_status_text:text('GO!!')
+    end
+
+    position_sc_bar_line()
+    if mb_visible then
+        position_mb_text()
+    end
+
+    if main_overlay_visible() then
+        sc_bar_text:show()
+        sc_bar_label_text:show()
+        sc_bar_status_text:show()
+        if sc_chain_counter_visible then
+            sc_chain_counter_text:show()
+        end
+        if sc_chain_info_visible then
+            sc_chain_info_text:show()
+            sc_chain_info_name_text:show()
+            if sc_chain_info_elements_value ~= '' then sc_chain_info_elements_text:show() else sc_chain_info_elements_text:hide() end
+        end
+        if mb_visible then mb_text:show() end
+    else
+        sc_bar_text:hide()
+        sc_bar_label_text:hide()
+        sc_bar_status_text:hide()
+        sc_chain_counter_text:hide()
+        sc_chain_info_text:hide()
+        sc_chain_info_name_text:hide()
+        sc_chain_info_elements_text:hide()
+        mb_text:hide()
+    end
 end
 
 local function request_layout_refresh(duration)
@@ -917,6 +1754,76 @@ local function apply_avg_style(avg)
     end
 end
 
+local function update_avg_trend()
+    -- Trend arrow compares recent successful WS against the prior baseline.
+    -- It starts after 10 successful non-whiff WS so the baseline is more meaningful
+    -- during normal testing, then naturally grows into the intended
+    -- last-5-versus-previous-20 comparison once 25 WS are available.
+    local n = #recent_ws
+    if n < 10 then
+        avg_trend = ''
+        avg_trend_color = {255, 255, 255}
+        return
+    end
+
+    local recent_count = math.min(5, math.floor(n / 2))
+    local previous_count = math.min(20, n - recent_count)
+    local recent_sum = 0
+    local previous_sum = 0
+
+    for i = n - recent_count + 1, n do
+        recent_sum = recent_sum + (recent_ws[i] or 0)
+    end
+
+    for i = n - recent_count - previous_count + 1, n - recent_count do
+        previous_sum = previous_sum + (recent_ws[i] or 0)
+    end
+
+    local recent_avg = recent_sum / math.max(recent_count, 1)
+    local previous_avg = previous_sum / math.max(previous_count, 1)
+
+    if recent_avg > previous_avg * 1.02 then
+        avg_trend = '↑'
+        avg_trend_color = {80, 255, 80}
+    elseif recent_avg < previous_avg * 0.98 then
+        avg_trend = '↓'
+        avg_trend_color = {255, 80, 80}
+    else
+        avg_trend = '→'
+        avg_trend_color = {255, 255, 255}
+    end
+end
+
+local function apply_avg_trend_style()
+    avg_trend_text:text(avg_trend or '')
+    avg_trend_text:font('Consolas')
+    avg_trend_text:size(settings.avg_size)
+    avg_trend_text:color(avg_trend_color[1] or 255, avg_trend_color[2] or 255, avg_trend_color[3] or 255)
+    avg_trend_text:stroke_width(settings.stroke_width)
+
+    if avg_trend and avg_trend ~= '' and alpha_current > 0 and fade_state ~= 'hidden' then
+        avg_trend_text:show()
+    else
+        avg_trend_text:hide()
+    end
+end
+
+local function reset_average(silent)
+    total_ws_damage = 0
+    total_ws_count = 0
+    avg_dmg = '-'
+    recent_ws = {}
+    avg_trend = ''
+    avg_trend_color = {255, 255, 255}
+    apply_avg_style(0)
+    apply_avg_trend_style()
+    update_display()
+    request_layout_refresh(0.45)
+    if not silent then
+        windower.add_to_chat(200, '[CrankWatch] Average reset.')
+    end
+end
+
 local function update_display()
     ws_text:text('Last WS: ' .. last_ws .. '!')
 
@@ -926,55 +1833,32 @@ local function update_display()
     end
 
     dmg_text:text(damage_line)
-    highlight_text:text(damage_line)
     avg_text:text('')
     avg_label_text:text('Avg: ')
     avg_value_text:text(avg_dmg)
+    apply_avg_trend_style()
 
     position_line(ws_text, settings.center_y)
     if not whiff_shaking then
         position_line(dmg_text, settings.center_y + settings.line_gap)
     end
 
-    if highlight_visible and settings.gradient_enabled then
-        position_line(highlight_text, settings.center_y + settings.line_gap - 2)
-    end
 
     position_avg_line()
+    if sc_bar_active then
+        position_sc_bar_line()
+    elseif sc_chain_counter_visible then
+        position_sc_chain_counter()
+    end
+    if sc_chain_info_visible then
+        position_sc_chain_info()
+    end
+    if mb_visible then
+        position_mb_text()
+    end
 
     if flair_visible and not flair_fading then
         position_line(flair_text, settings.center_y + settings.flair_gap)
-    end
-end
-
-local function apply_gradient_style(raw_dmg)
-    highlight_visible = false
-    highlight_text:hide()
-    highlight_text:alpha(0)
-    highlight_text:stroke_alpha(0)
-
-    if not settings.gradient_enabled then
-        return
-    end
-
-    raw_dmg = tonumber(raw_dmg) or 0
-
-    if raw_dmg >= 80000 then
-        -- Red tier: warm orange/red highlight over red base.
-        highlight_text:color(255, 150, 80)
-        highlight_text:stroke_width(0)
-        highlight_text:alpha(math.floor(alpha_current * 0.35))
-        highlight_text:stroke_alpha(0)
-        highlight_visible = true
-        highlight_text:show()
-    elseif raw_dmg >= 50000 then
-        -- Gold tier: pale yellow highlight over gold base.
-        highlight_text:color(255, 245, 150)
-        highlight_text:stroke_width(0)
-        highlight_text:alpha(math.floor(alpha_current * 0.35))
-        highlight_text:stroke_alpha(0)
-        highlight_visible = true
-        highlight_text:show()
     end
 end
 
@@ -989,7 +1873,6 @@ local function start_pop(raw_dmg)
     pop_start = os.clock()
     pop_base_size = settings.dmg_size
     dmg_text:size(settings.dmg_size + settings.pop_bonus_size)
-    highlight_text:size(settings.dmg_size + settings.pop_bonus_size)
     update_display()
 end
 
@@ -998,7 +1881,6 @@ local function apply_damage_style(raw_dmg)
 
     dmg_text:color(r, g, b)
     dmg_text:stroke_width(stroke)
-    apply_gradient_style(raw_dmg)
 
     if flair then
         flair_text:text(flair)
@@ -1056,7 +1938,11 @@ local function player_ws_from_line(line, player_name)
 end
 
 local function damage_from_line(line)
-    return line:match('takes%s+([%d,]+)%s+points?%s+of%s+damage')
+    -- Case-insensitive and slightly forgiving because Battlemod / big-chat
+    -- formatting can vary in capitalization and punctuation.
+    local l = tostring(line or ''):lower()
+    return l:match('takes%s+([%d,]+)%s+points?%s+of%s+damage')
+        or l:match('takes%s+([%d,]+)%s+damage')
 end
 
 local function whiff_from_line(line)
@@ -1072,7 +1958,42 @@ end
 local function skillchain_from_line(line)
     local l = line:lower()
     return l:find('skillchain') ~= nil
-        or l:find('magic burst') ~= nil
+end
+
+local function normalize_mb_line(line)
+    -- Avoid deleting the visible character after a Windower control byte.
+    -- The older cleaner used \30. / \31., which can accidentally remove the
+    -- first real letter of "Magic Burst!" if a control byte appears before it.
+    local s = tostring(line or '')
+    s = s:gsub('cs%(%d+,%d+,%d+%)', '')
+    s = s:gsub('cr', '')
+    s = s:gsub('\30', '')
+    s = s:gsub('\31', '')
+    s = s:gsub('%s+', ' ')
+    return s
+end
+
+local function magic_burst_damage_from_line(line)
+    if not line then return nil end
+
+    local l = normalize_mb_line(line)
+    local lower = l:lower()
+
+    -- Be intentionally loose: control/color codes or Battlemod can split the
+    -- exact phrase, but if the same incoming line has both words, treat it as MB.
+    if not (lower:find('magic') and lower:find('burst')) then
+        return nil
+    end
+
+    -- User-facing log shape:
+    -- Magic Burst! The TARGET takes X points of damage.
+    -- Lua patterns do not need to know the target; just grab X after "takes".
+    local dmg = l:match('[Tt]akes%s+([%d,]+)')
+        or l:match('[Tt]akes[^%d]+([%d,]+)')
+        or l:match('([%d,]+)%s+points%s+of%s+damage')
+        or l:match('([%d,]+)%s+point%s+of%s+damage')
+
+    return dmg
 end
 
 local function position_sc_line(y)
@@ -1080,13 +2001,75 @@ local function position_sc_line(y)
     sc_text:pos(math.floor(settings.center_x - (width / 2)), y)
 end
 
+local function update_sc_chain_counter()
+    if not settings.sc_chain_counter_enabled then return end
+    if sc_chain_count <= 0 then
+        sc_chain_counter_visible = false
+        sc_chain_counter_text:hide()
+        start_sc_chain_info_fade()
+        return
+    end
+
+    sc_chain_counter_text:text('Chain: ' .. tostring(sc_chain_count))
+    sc_chain_counter_text:font(settings.font or 'Highwind')
+    sc_chain_counter_text:size(settings.sc_chain_counter_size or 18)
+    sc_chain_counter_text:color(255, 255, 255)
+    sc_chain_counter_text:stroke_width(settings.stroke_width)
+    sc_chain_counter_text:alpha(alpha_current > 0 and alpha_current or 255)
+    sc_chain_counter_text:stroke_alpha(alpha_current > 0 and alpha_current or 255)
+    sc_chain_counter_visible = true
+    sc_chain_counter_text:show()
+
+    if sc_bar_active then
+        position_sc_chain_counter()
+    end
+end
+
+
+local function start_mb_popup(dmg)
+    if not settings.mb_enabled then return end
+
+    local raw = clean_damage_number(dmg)
+    -- Show MB even when damage is 0 so resisted/immune test targets still confirm detection.
+    if raw < 0 then return end
+
+    mb_value = 'MB: ' .. format_number(raw) .. '!!'
+    mb_text:text(mb_value)
+    mb_text:font(settings.font or 'Highwind')
+    mb_text:size(settings.mb_size or 18)
+    mb_text:color(255, 140, 255)
+    mb_text:stroke_width(settings.stroke_width)
+    mb_text:alpha(0)
+    mb_text:stroke_alpha(0)
+
+    mb_visible = true
+    mb_start_time = os.clock()
+    mb_shake_start = mb_start_time
+    mb_expire = mb_start_time + (settings.mb_duration or 3.0)
+
+    position_mb_text()
+    mb_text:show()
+end
+
 local function start_sc_popup(dmg)
     if not settings.sc_enabled then return end
 
+    -- Do not show SC Bonus if the main CrankWatch overlay is hidden.
+    if not main_overlay_visible() then
+        return
+    end
+
     local raw = clean_damage_number(dmg)
-    if raw <= 0 then return end
+    -- Show and count skillchains even when the SC damage is 0.
+    -- This is useful for tracking chain progression and spotting immunity/resist behavior.
+    if raw < 0 then return end
 
     sc_bonus_dmg = raw
+
+    -- Chain count is packet-driven. The delayed chat-side SC damage line only
+    -- displays the SC Bonus popup; it must not increment Chain or refill/re-time
+    -- the countdown bar.
+
     sc_text:text('SC Bonus: ' .. format_number(raw) .. '!!')
     sc_text:font(settings.font)
     sc_text:size(settings.sc_size or settings.flair_size)
@@ -1109,8 +2092,14 @@ local function start_sc_popup(dmg)
     sc_fade_start_alpha = 255
     sc_text:show()
 
+    -- Chain count/depth is packet-driven by the SC bar now.
+    -- Chat-side SC damage should update the visible SC Bonus popup only.
+    -- The countdown bar is packet-driven, so do NOT restart/refill the red WAIT bar here.
+    -- Restarting from chat causes drift on longer chains because chat appears after
+    -- the action packet timing already began.
+
     sc_armed = false
-    sc_window_until = 0
+    sc_window_until = sc_packet_bar_enabled and (sc_bar_active and sc_bar_close_time or 0) or 0
 
     if debug_mode then
         windower.add_to_chat(200, '[CrankWatch] SC Bonus: ' .. format_number(raw))
@@ -1133,6 +2122,13 @@ local function commit(ws, dmg)
     if not is_whiff then
         total_ws_damage = total_ws_damage + raw_dmg
         total_ws_count = total_ws_count + 1
+
+        table.insert(recent_ws, raw_dmg)
+        if #recent_ws > 25 then
+            table.remove(recent_ws, 1)
+        end
+        update_avg_trend()
+
         local avg_raw = math.floor(total_ws_damage / total_ws_count)
         avg_dmg = format_number(avg_raw)
         apply_avg_style(avg_raw)
@@ -1157,7 +2153,22 @@ local function commit(ws, dmg)
     pending_time = 0
 
     last_ws_time = os.clock()
-    sc_window_until = last_ws_time + (settings.sc_window or 4.0)
+
+    -- Damage/chat UI updates happen slightly after the packet event that starts
+    -- the WAIT bar. Some action-listener environments can surface a second
+    -- WS-result style event at the same moment damage is reported. Guard that
+    -- short period so the display update cannot indirectly refill the red bar.
+    if sc_bar_active and os.clock() < (sc_bar_open_time or 0) then
+        sc_bar_damage_update_guard_until = os.clock() + 0.90
+    end
+
+    -- Important: the SC countdown bar is packet-driven only.
+    -- Damage/chat updates must never start, stop, refill, or retime the bar.
+    -- Otherwise the red WAIT bar can begin from the action packet and then pop
+    -- back to full when the delayed damage line updates the CrankWatch display.
+    if sc_bar_active then
+        sc_window_until = sc_bar_close_time
+    end
     sc_armed = false
 
     apply_damage_style(raw_dmg)
@@ -1178,62 +2189,6 @@ local function commit(ws, dmg)
     end
 end
 
-local function sync_center_from_ws_anchor()
-    local x, y = ws_text:pos()
-    settings.center_x = math.floor(x + (safe_extents(ws_text) / 2))
-    settings.center_y = y
-    update_display()
-end
-
-local function sync_center_from_dmg_anchor()
-    local x, y = dmg_text:pos()
-    settings.center_x = math.floor(x + (safe_extents(dmg_text) / 2))
-    settings.center_y = y - settings.line_gap
-    update_display()
-end
-
-local function sync_center_from_avg_anchor()
-    local x, y = avg_text:pos()
-    settings.center_x = math.floor(x + (safe_extents(avg_text) / 2))
-    settings.center_y = y - settings.avg_gap
-    update_display()
-end
-
-local function sync_center_from_flair_anchor()
-    local x, y = flair_text:pos()
-    settings.center_x = math.floor(x + (safe_extents(flair_text) / 2))
-    settings.center_y = y - settings.flair_gap
-    update_display()
-end
-
-ws_text:register_event('drag', function()
-    dragging_anchor = true
-    sync_center_from_ws_anchor()
-end)
-
-dmg_text:register_event('drag', function()
-    dragging_anchor = true
-    sync_center_from_dmg_anchor()
-end)
-
-avg_text:register_event('drag', function()
-    dragging_anchor = true
-    sync_center_from_avg_anchor()
-end)
-
-flair_text:register_event('drag', function()
-    dragging_anchor = true
-    sync_center_from_flair_anchor()
-end)
-
-windower.register_event('mouse', function(type)
-    if type == 2 and dragging_anchor then
-        dragging_anchor = false
-        save_settings()
-        windower.add_to_chat(200, '[CrankWatch] Position saved.')
-    end
-end)
-
 windower.register_event('prerender', function()
     local now = os.clock()
 
@@ -1244,6 +2199,43 @@ windower.register_event('prerender', function()
             layout_refresh_until = 0
         end
     end
+
+    update_sc_bar()
+
+    if mb_visible then
+        if now >= mb_expire then
+            mb_visible = false
+            mb_start_time = 0
+            mb_expire = 0
+            mb_value = ''
+            mb_text:hide()
+        else
+            local fade_in = math.max(settings.mb_fade_in_duration or 0.15, 0.01)
+            local fade_out = math.max(settings.mb_fade_out_duration or 0.35, 0.01)
+            local elapsed = now - (mb_start_time or now)
+            local remaining = mb_expire - now
+            local a = 255
+
+            if elapsed < fade_in then
+                a = math.floor(255 * (elapsed / fade_in))
+            elseif remaining < fade_out then
+                a = math.floor(255 * (remaining / fade_out))
+            end
+
+            a = clamp(a, 0, 255)
+            mb_text:alpha(a)
+            mb_text:stroke_alpha(a)
+            position_mb_text()
+            mb_text:show()
+        end
+    end
+
+    -- Hard link SC info visibility to the live Chain counter state.
+    -- If the counter has disappeared/reset, the last SC info should fade too.
+    if sc_chain_info_visible and not sc_chain_info_fading and sc_chain_count <= 0 and not sc_chain_counter_visible then
+        start_sc_chain_info_fade()
+    end
+
 
     if sc_visible and sc_fading then
         local t = (now - sc_fade_start) / math.max(settings.sc_fade_duration or 4.50, 0.01)
@@ -1265,6 +2257,46 @@ windower.register_event('prerender', function()
             sc_text:show()
 
             position_sc_line(math.floor(y + (settings.flair_offset_y or -4) + (settings.sc_offset_y or 0)))
+        end
+    end
+
+    if sc_chain_info_visible then
+        if not main_overlay_visible() then
+            sc_chain_info_text:hide()
+            sc_chain_info_name_text:hide()
+            sc_chain_info_elements_text:hide()
+        else
+            position_sc_chain_info()
+            if sc_chain_info_fading then
+                local t = (now - sc_chain_info_fade_start) / 0.75
+                if t >= 1 then
+                    hide_sc_chain_info()
+                else
+                    local a = math.floor((alpha_current > 0 and alpha_current or 255) * (1 - t))
+                    sc_chain_info_text:alpha(a)
+                    sc_chain_info_text:stroke_alpha(a)
+                    sc_chain_info_name_text:alpha(a)
+                    sc_chain_info_name_text:stroke_alpha(a)
+                    sc_chain_info_elements_text:alpha(a)
+                    sc_chain_info_elements_text:stroke_alpha(a)
+                    sc_chain_info_text:show()
+                    sc_chain_info_name_text:show()
+                    if sc_chain_info_elements_value ~= '' then sc_chain_info_elements_text:show() else sc_chain_info_elements_text:hide() end
+                end
+            elseif (sc_chain_info_expire or 0) > 0 and now >= (sc_chain_info_expire or 0) then
+                sc_chain_info_fading = true
+                sc_chain_info_fade_start = now
+            else
+                sc_chain_info_text:alpha(alpha_current > 0 and alpha_current or 255)
+                sc_chain_info_text:stroke_alpha(alpha_current > 0 and alpha_current or 255)
+                sc_chain_info_name_text:alpha(alpha_current > 0 and alpha_current or 255)
+                sc_chain_info_name_text:stroke_alpha(alpha_current > 0 and alpha_current or 255)
+                sc_chain_info_elements_text:alpha(alpha_current > 0 and alpha_current or 255)
+                sc_chain_info_elements_text:stroke_alpha(alpha_current > 0 and alpha_current or 255)
+                sc_chain_info_text:show()
+                sc_chain_info_name_text:show()
+                if sc_chain_info_elements_value ~= '' then sc_chain_info_elements_text:show() else sc_chain_info_elements_text:hide() end
+            end
         end
     end
 
@@ -1320,14 +2352,12 @@ windower.register_event('prerender', function()
         if t >= 1 then
             pop_active = false
             dmg_text:size(settings.dmg_size)
-            highlight_text:size(settings.dmg_size)
             update_display()
         else
             -- Ease back from enlarged to normal size.
             local eased = 1 - ((1 - t) * (1 - t))
             local size = math.floor((settings.dmg_size + settings.pop_bonus_size) - (settings.pop_bonus_size * eased))
             dmg_text:size(size)
-            highlight_text:size(size)
             update_display()
         end
     end
@@ -1347,21 +2377,17 @@ windower.register_event('prerender', function()
         avg_label_text:stroke_alpha(255)
         avg_value_text:alpha(255)
         avg_value_text:stroke_alpha(255)
+        avg_trend_text:alpha(255)
+        avg_trend_text:stroke_alpha(255)
 
         if t >= 1 then
             fade_state = 'visible'
             dmg_text:alpha(255)
             dmg_text:stroke_alpha(255)
-            if highlight_visible and settings.gradient_enabled then
-                highlight_text:alpha(math.floor(255 * 0.35))
-            end
         else
             local a = math.max(1, math.floor(255 * t))
             dmg_text:alpha(a)
             dmg_text:stroke_alpha(a)
-            if highlight_visible and settings.gradient_enabled then
-                highlight_text:alpha(math.floor(a * 0.35))
-            end
         end
 
     elseif fade_state == 'visible' then
@@ -1381,16 +2407,281 @@ windower.register_event('prerender', function()
     end
 end)
 
+
+local sc_action_categories = {
+    weaponskill_finish = true,
+    avatar_tp_finish = true,
+}
+
+local function get_action_delay(resource, action_id)
+    if skills and resource and action_id and skills[resource] and skills[resource][action_id] then
+        return skills[resource][action_id].delay or settings.sc_bar_delay or 3.0
+    end
+    return settings.sc_bar_delay or 3.0
+end
+
+local function is_valid_sc_bar_action(resource, action_id)
+    -- Use the same style as Skillchains:
+    -- action:get_spell() returns resource + action_id.
+    -- A real player WS should resolve as skills.weapon_skills[action_id].
+    if not skills or not resource or not action_id then
+        return false
+    end
+
+    local ability = skills[resource] and skills[resource][action_id]
+    if not ability then
+        return false
+    end
+
+    if resource ~= 'weapon_skills' then
+        return false
+    end
+
+    return ability.en and is_weapon_skill(ability.en)
+end
+
+local function party_member_id(member)
+    if type(member) ~= 'table' then return nil end
+
+    if member.mob and member.mob.id then
+        return tonumber(member.mob.id)
+    end
+
+    return tonumber(member.id)
+end
+
+local function is_party_or_alliance_actor(actor_id)
+    actor_id = tonumber(actor_id)
+    if not actor_id then return false end
+
+    local party = windower.ffxi.get_party()
+    if not party then return false end
+
+    -- Windower's party table includes p0-p5 and alliance slots when present.
+    -- Iterating every table entry keeps this compatible with party-only and
+    -- alliance layouts without needing to know the exact slot names.
+    for _, member in pairs(party) do
+        local member_id = party_member_id(member)
+        if member_id and member_id == actor_id then
+            return true
+        end
+    end
+
+    -- Pet/avatar/automaton support: allow the action if the actor's owner is
+    -- in the party/alliance. This keeps SMN/PUP/DRG pet TP actions from being
+    -- filtered out while still blocking nearby strangers.
+    local mob = windower.ffxi.get_mob_by_id(actor_id)
+    local owner_id = mob and tonumber(mob.owner_id)
+    if owner_id then
+        for _, member in pairs(party) do
+            local member_id = party_member_id(member)
+            if member_id and member_id == owner_id then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+local function refresh_sc_bar_from_action(actor_id, target_id, resource, action_id, add_eff, conclusion)
+    if not settings.sc_bar_enabled or not target_id then return end
+
+    -- Only track WS/SC packets for the player's current battle target.
+    -- Any party/alliance member can advance or break the chain, but only when
+    -- their action is on the exact mob the local player is targeting.
+    if not is_current_battle_target_id(target_id) then
+        if debug_mode then
+            windower.add_to_chat(200, '[CrankWatch] Ignored SC packet on non-current target: ' .. tostring(target_id))
+        end
+        return
+    end
+
+    if not is_party_or_alliance_actor(actor_id) then
+        if debug_mode then
+            windower.add_to_chat(200, '[CrankWatch] Ignored outside-party/alliance SC packet actor: ' .. tostring(actor_id))
+        end
+        return
+    end
+
+    local now = os.clock()
+
+    -- Damage/chat UI updates happen after the packet event that starts the bar.
+    -- If the action listener also sees a second WS-result style event during that
+    -- brief UI update, do not let it refill the red WAIT bar.
+    if sc_bar_active
+        and now < (sc_bar_open_time or 0)
+        and target_id == sc_bar_target_id
+        and now <= (sc_bar_damage_update_guard_until or 0) then
+        if debug_mode then
+            windower.add_to_chat(200, '[CrankWatch] Ignored damage-update WAIT duplicate for SC bar.')
+        end
+        return
+    end
+
+    local confirmed_sc = add_eff and conclusion and tonumber(add_eff.message_id) and SKILLCHAIN_IDS[tonumber(add_eff.message_id)]
+
+    -- Catch exact duplicate events first. These are the same WS result being
+    -- surfaced twice, not a real extra alt WS.
+    local duplicate_window = 0.75
+    local exact_duplicate = sc_bar_last_action_id == action_id
+        and sc_bar_last_actor_id == actor_id
+        and sc_bar_target_id == target_id
+        and (now - (sc_bar_last_action_time or 0)) < duplicate_window
+
+    if exact_duplicate then
+        if debug_mode then
+            windower.add_to_chat(200, '[CrankWatch] Ignored exact duplicate WS packet for SC bar.')
+        end
+        return
+    end
+
+    -- If different WS packets hit the same target almost simultaneously, they are
+    -- not duplicates. This is the Sortie Send-macro case: one WS may close a SC
+    -- while another WS immediately interrupts/overwrites the chain state. In that
+    -- situation, reset must win over counting additional Chain progress.
+    local burst_window = settings.sc_bar_burst_window or 0.45
+    local same_target_burst = sc_bar_active
+        and sc_bar_target_id == target_id
+        and (now - (sc_bar_last_action_time or 0)) < burst_window
+
+    -- During the opening WAIT delay, old builds ignored same-target packets to
+    -- avoid duplicate bar refills. That accidentally hid real Send-macro WSs from
+    -- different alts. Keep the exact-duplicate protection above, but let real
+    -- different actions continue through so they can reset Chain when needed.
+    local burst_interrupt = same_target_burst
+
+    if confirmed_sc and not burst_interrupt then
+        -- A confirmed add_effect skillchain means the previous WS actually chained.
+        -- This is the only place Chain increments, so non-combining WSs during GO
+        -- will refresh the bar but will not falsely raise the Chain count.
+        sc_chain_count = (sc_chain_count or 0) + 1
+        sc_chain_step = clamp((sc_chain_count or 0) + 1, 1, settings.sc_bar_max_step or 5)
+        update_sc_chain_counter()
+        show_sc_chain_info(sc_chain_count, sc_name_from_add_effect(add_eff))
+
+        if debug_mode then
+            local sc_name = sc_name_from_add_effect(add_eff)
+            windower.add_to_chat(200, '[CrankWatch] Packet-confirmed skillchain: ' .. sc_name .. ' / Chain ' .. tostring(sc_chain_count))
+        end
+    end
+
+    -- If a new WS lands while the previous SC window is still active, it is only
+    -- a possible chain follow-up. Do not increment Chain from this alone because
+    -- the WS elements may not actually create a skillchain. Chain increments only
+    -- when the packet add_effect confirms an actual skillchain.
+    local is_chain_followup = sc_bar_active
+        and sc_bar_target_id == target_id
+        and now <= (sc_bar_close_time or 0)
+
+    if burst_interrupt then
+        if confirmed_sc then
+            show_sc_chain_info((sc_chain_count or 0) + 1, sc_name_from_add_effect(add_eff))
+        end
+
+        if debug_mode then
+            windower.add_to_chat(200, '[CrankWatch] Chain reset: simultaneous WS burst on same target.')
+        end
+
+        sc_chain_count = 0
+        sc_chain_counter_visible = false
+        sc_chain_counter_text:hide()
+        sc_chain_step = 1
+
+    elseif not confirmed_sc then
+        if is_chain_followup then
+            -- A WS landed inside the active skillchain window but did not carry
+            -- a packet-confirmed skillchain add_effect. That means the elements
+            -- did not combine, so the visible chain is broken. Hide Chain and
+            -- let this WS become the new opener for the next possible chain.
+            if (sc_chain_count or 0) > 0 and debug_mode then
+                windower.add_to_chat(200, '[CrankWatch] Chain reset: WS did not produce a skillchain.')
+            end
+        end
+
+        -- Fresh opening WS, or failed follow-up WS, starts a new possible chain
+        -- sequence. Do not increment Chain here; only packet-confirmed SC
+        -- add_effect events do that.
+        sc_chain_count = 0
+        sc_chain_counter_visible = false
+        sc_chain_counter_text:hide()
+        sc_chain_step = 1
+    end
+
+    -- Any new WS on the current target interrupts/restarts the opening delay.
+    -- WS packets on other mobs are ignored above, even if they come from party/alliance.
+    local step = sc_chain_step or 1
+    start_sc_bar_from_time(now, step, target_id, action_id, actor_id, get_action_delay(resource, action_id))
+    sc_window_until = sc_bar_close_time
+    sc_armed = false
+
+    if debug_mode then
+        windower.add_to_chat(200, '[CrankWatch] SC bar refreshed by WS action on target ' .. tostring(target_id))
+    end
+end
+
+if sc_packet_bar_enabled then
+    ActionPacket.open_listener(function(act)
+        local actionpacket = ActionPacket.new(act)
+        local category = actionpacket:get_category_string()
+        if not sc_action_categories[category] or act.param == 0 then return end
+
+        local actor_id = actionpacket:get_id()
+        local target = actionpacket:get_targets()()
+        if not target then return end
+
+        local action = target:get_actions()()
+        if not action then return end
+
+        local add_eff = action:get_add_effect()
+        local param, resource, action_id, interruption, conclusion = action:get_spell()
+        if not action_id or action_id == 0 then return end
+
+        if not is_valid_sc_bar_action(resource, action_id) then
+            if debug_mode then
+                local ability = skills and resource and skills[resource] and skills[resource][action_id]
+                local name = ability and ability.en or tostring(action_id)
+                windower.add_to_chat(200, '[CrankWatch] Ignored non-whitelisted SC packet action: resource=' .. tostring(resource) .. ' name=' .. tostring(name))
+            end
+            return
+        end
+
+        -- Ignore other mobs before doing any state-changing cleanup. Otherwise a
+        -- dying side target can accidentally wipe the bar/chain for your target.
+        if not is_current_battle_target_id(target.id) then
+            if debug_mode then
+                windower.add_to_chat(200, '[CrankWatch] Ignored packet target that is not current target: ' .. tostring(target.id))
+            end
+            return
+        end
+
+        local mob = windower.ffxi.get_mob_by_id(target.id)
+        if not mob or (tonumber(mob.hpp) or 0) <= 0 then
+            stop_sc_bar(true)
+            return
+        end
+
+        refresh_sc_bar_from_action(actor_id, target.id, resource, action_id, add_eff, conclusion)
+    end)
+end
+
 windower.register_event('incoming text', function(original, modified)
     local p = windower.ffxi.get_player()
     if not p then return end
 
     local now = os.clock()
     local name = p.name
+    local raw_line = tostring(original or '')
+    local raw_mod_line = tostring(modified or '')
+    local raw_all = raw_line .. ' ' .. raw_mod_line
     local line = clean_line(original)
+    local mod_line = clean_line(modified)
 
     if debug_mode then
         windower.add_to_chat(207, '[wsdamage debug] ' .. line)
+        if mod_line ~= '' and mod_line ~= line then
+            windower.add_to_chat(207, '[wsdamage debug modified] ' .. mod_line)
+        end
     end
 
     if pending_ws and (now - pending_time > settings.pending_timeout) then
@@ -1401,22 +2692,55 @@ windower.register_event('incoming text', function(original, modified)
         pending_time = 0
     end
 
-    local ws = player_ws_from_line(line, name)
-    local dmg = damage_from_line(line)
-    local whiff = whiff_from_line(line)
-    local skillchain = skillchain_from_line(line)
+    local ws = player_ws_from_line(line, name) or player_ws_from_line(mod_line, name)
+    local dmg = damage_from_line(line) or damage_from_line(mod_line)
+    local whiff = whiff_from_line(line) or whiff_from_line(mod_line)
+    local skillchain = skillchain_from_line(line) or skillchain_from_line(mod_line)
+    local mb_dmg = magic_burst_damage_from_line(line) or magic_burst_damage_from_line(mod_line) or magic_burst_damage_from_line(raw_line) or magic_burst_damage_from_line(raw_mod_line)
+    local mb_seen_line = normalize_mb_line(raw_all):lower()
+    local mb_seen = mb_seen_line:find('magic') and mb_seen_line:find('burst')
 
     if settings.sc_enabled and sc_window_until > 0 and now > sc_window_until then
         sc_window_until = 0
         sc_armed = false
+        if sc_bar_active and now > sc_bar_close_time then
+            stop_sc_bar(true)
+        end
+    end
+
+    if mb_dmg then
+        -- Restored from the old working MB trigger path: the log line itself
+        -- contains both "Magic Burst!" and the damage, so just flash the
+        -- minimal MB overlay immediately.
+        mb_pending_until = 0
+        start_mb_popup(mb_dmg)
+        return
+    end
+
+    -- If Windower/Battlemod splits "Magic Burst!" and the damage into separate
+    -- incoming text events, arm a short window and use the next non-WS damage line.
+    if mb_seen then
+        mb_pending_until = now + 1.75
+    end
+
+    if mb_pending_until and mb_pending_until > 0 then
+        if now <= mb_pending_until and dmg and not ws and not skillchain then
+            mb_pending_until = 0
+            start_mb_popup(dmg)
+            return
+        elseif now > mb_pending_until then
+            mb_pending_until = 0
+        end
     end
 
     if settings.sc_enabled and skillchain and sc_window_until > 0 and now <= sc_window_until then
-        sc_armed = true
+        sc_armed = (not sc_bar_target_id) or is_current_battle_target_id(sc_bar_target_id)
     end
 
     if settings.sc_enabled and dmg and sc_armed and sc_window_until > 0 and now <= sc_window_until and not ws then
-        start_sc_popup(dmg)
+        if (not sc_bar_target_id) or is_current_battle_target_id(sc_bar_target_id) then
+            start_sc_popup(dmg)
+        end
         return
     end
 
@@ -1472,32 +2796,64 @@ local function apply_all_visual_settings()
     avg_text:font(settings.font)
     avg_label_text:font(settings.font)
     avg_value_text:font(settings.font)
+    avg_trend_text:font('Consolas')
     sc_text:font(settings.font)
+    sc_bar_text:font(settings.sc_bar_font or 'Consolas')
+    sc_bar_label_text:font(settings.font)
+    sc_bar_status_text:font(settings.font)
+    sc_chain_counter_text:font(settings.font)
+    sc_chain_info_text:font(settings.font)
+    sc_chain_info_name_text:font(settings.font)
+    sc_chain_info_elements_text:font(settings.font)
+    mb_text:font(settings.font)
     flair_text:font(settings.font)
-    highlight_text:font(settings.font)
 
     ws_text:size(settings.ws_size)
     dmg_text:size(settings.dmg_size)
     avg_text:size(settings.avg_size)
     avg_label_text:size(settings.avg_size)
     avg_value_text:size(settings.avg_size)
+    avg_trend_text:size(settings.avg_size)
     sc_text:size(settings.sc_size or settings.flair_size)
+    sc_bar_text:size(settings.sc_bar_size or settings.avg_size)
+    sc_bar_label_text:size(settings.sc_bar_label_size or 15)
+    sc_bar_status_text:size(settings.sc_bar_label_size or 15)
+    sc_chain_counter_text:size(settings.sc_chain_counter_size or 18)
+    sc_chain_info_text:size(settings.sc_chain_info_size or 20)
+    sc_chain_info_name_text:size(settings.sc_chain_info_size or 20)
+    sc_chain_info_elements_text:size(settings.sc_chain_info_size or 20)
+    mb_text:size(settings.mb_size or 22)
     flair_text:size(settings.flair_size)
-    highlight_text:size(settings.dmg_size)
 
     ws_text:stroke_width(settings.stroke_width)
     dmg_text:stroke_width(settings.stroke_width)
     avg_text:stroke_width(settings.stroke_width)
     avg_label_text:stroke_width(settings.stroke_width)
     avg_value_text:stroke_width(settings.stroke_width)
+    avg_trend_text:stroke_width(settings.stroke_width)
     sc_text:stroke_width(settings.stroke_width)
+    sc_bar_text:stroke_width(settings.stroke_width)
+    sc_bar_label_text:stroke_width(settings.stroke_width)
+    sc_bar_status_text:stroke_width(settings.stroke_width)
+    sc_chain_counter_text:stroke_width(settings.stroke_width)
+    sc_chain_info_text:stroke_width(settings.stroke_width)
+    sc_chain_info_name_text:stroke_width(settings.stroke_width)
+    sc_chain_info_elements_text:stroke_width(settings.stroke_width)
+    mb_text:stroke_width(settings.stroke_width)
     flair_text:stroke_width(settings.stroke_width)
-    highlight_text:stroke_width(0)
 
     ws_text:color(255, 255, 255)
     avg_text:color(255, 255, 255)
     avg_label_text:color(255, 255, 255)
+    apply_avg_trend_style()
     sc_text:color(120, 255, 255)
+    sc_bar_text:color(80, 255, 120)
+    sc_bar_label_text:color(255, 255, 255)
+    sc_chain_info_text:color(255, 255, 255)
+    sc_chain_info_name_text:color(sc_chain_info_color[1] or 255, sc_chain_info_color[2] or 255, sc_chain_info_color[3] or 255)
+    sc_chain_info_elements_text:color(255, 255, 255)
+    sc_bar_status_text:color(80, 255, 80)
+    sc_chain_counter_text:color(255, 255, 255)
     apply_avg_style(clean_damage_number(avg_dmg))
 
     apply_damage_style(last_raw_dmg)
@@ -1527,8 +2883,174 @@ windower.register_event('addon command', function(cmd, arg1, arg2)
         commit('Torcleaver', '99999')
 
     elseif cmd == 'testsc' then
+        local valid_skillchains = {
+            liquefaction  = 'Liquefaction',
+            induration    = 'Induration',
+            reverberation = 'Reverberation',
+            detonation    = 'Detonation',
+            scission      = 'Scission',
+            impaction     = 'Impaction',
+            transfixion   = 'Transfixion',
+            compression   = 'Compression',
+            fusion        = 'Fusion',
+            fragmentation = 'Fragmentation',
+            distortion    = 'Distortion',
+            gravitation   = 'Gravitation',
+            light         = 'Light',
+            darkness      = 'Darkness',
+            radiance      = 'Radiance',
+            umbra         = 'Umbra',
+        }
+
+        local requested = tostring(arg1 or ''):lower():gsub('_', ''):gsub('%s+', '')
+        local sc_name = valid_skillchains[requested]
+
+        if not sc_name then
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw testsc <skillchain name>')
+            windower.add_to_chat(200, '[CrankWatch] Valid skillchains: Liquefaction, Induration, Reverberation, Detonation, Scission, Impaction, Transfixion, Compression, Fusion, Fragmentation, Distortion, Gravitation, Light, Darkness, Radiance, Umbra.')
+        elseif not settings.sc_bar_enabled then
+            windower.add_to_chat(200, '[CrankWatch] Skillchain HUD is disabled. Use //cw scbar on before testing.')
+        else
+            -- This is a visual-only test of the same chain-info rendering path
+            -- used by real packet-confirmed skillchains.
+            fade_state = 'visible'
+            alpha_current = 255
+            last_ws_time = os.clock()
+            apply_alpha(255)
+            update_display()
+            show_sc_chain_info(1, sc_name)
+            request_layout_refresh(0.45)
+            windower.add_to_chat(200, '[CrankWatch] Testing skillchain display: ' .. sc_name .. '.')
+        end
+
+    elseif cmd == 'testmb' then
+        start_mb_popup(arg1 or '40000')
+
+
+    elseif cmd == 'mb' then
+        local value = arg1 and arg1:lower() or ''
+
+        if value == 'on' then
+            settings.mb_enabled = true
+            save_settings()
+            windower.add_to_chat(200, '[CrankWatch] Magic Burst display enabled.')
+        elseif value == 'off' then
+            settings.mb_enabled = false
+            mb_visible = false
+            mb_pending_until = 0
+            mb_text:hide()
+            save_settings()
+            windower.add_to_chat(200, '[CrankWatch] Magic Burst display disabled.')
+        else
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw mb on|off')
+        end
+
+    elseif cmd == 'mbsize' then
+        local size = tonumber(arg1)
+        if size then
+            settings.mb_size = size
+            mb_text:size(settings.mb_size)
+            if mb_visible then
+                position_mb_text()
+            end
+            save_settings()
+            update_display()
+            request_layout_refresh(0.45)
+            windower.add_to_chat(200, '[CrankWatch] MB size saved: ' .. tostring(size))
+        else
+            windower.add_to_chat(200, '[CrankWatch] Current MB size: ' .. tostring(settings.mb_size or 18))
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw mbsize <size>')
+        end
+
+    elseif cmd == 'mbx' then
+        local x = tonumber(arg1)
+        if x then
+            settings.mb_offset_x = x
+            save_settings()
+            if mb_visible then position_mb_text() end
+            windower.add_to_chat(200, '[CrankWatch] MB horizontal offset set to ' .. tostring(x) .. '.')
+        else
+            windower.add_to_chat(200, '[CrankWatch] MB horizontal offset: ' .. tostring(settings.mb_offset_x or 0) .. '. Use //cw mbx <pixels>.')
+        end
+
+    elseif cmd == 'mby' then
+        local y = tonumber(arg1)
+        if y then
+            settings.mb_offset_y = y
+            save_settings()
+            if mb_visible then position_mb_text() end
+            windower.add_to_chat(200, '[CrankWatch] MB vertical offset set to ' .. tostring(y) .. '.')
+        else
+            windower.add_to_chat(200, '[CrankWatch] MB vertical offset: ' .. tostring(settings.mb_offset_y or -4) .. '. Use //cw mby <pixels>.')
+        end
+
+    elseif cmd == 'testbar' then
         commit('Savage Blade', '54321')
-        start_sc_popup('18772')
+        test_sc_bar_default()
+        windower.add_to_chat(200, '[CrankWatch] Test SC bar started.')
+
+    elseif cmd == 'scbarlabelsize' then
+        local size = tonumber(arg1)
+        if size then
+            settings.sc_bar_label_size = size
+            apply_all_visual_settings()
+            save_settings()
+            windower.add_to_chat(200, '[CrankWatch] SC bar label size saved: ' .. size)
+        else
+            windower.add_to_chat(200, '[CrankWatch] Current SC bar label size: ' .. tostring(settings.sc_bar_label_size))
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw scbarlabelsize <size>')
+        end
+
+    elseif cmd == 'scbarlabeloverlap' then
+        local overlap = tonumber(arg1)
+        if overlap then
+            settings.sc_bar_label_overlap = overlap
+            update_display()
+            save_settings()
+            windower.add_to_chat(200, '[CrankWatch] SC bar label overlap saved: ' .. overlap)
+        else
+            windower.add_to_chat(200, '[CrankWatch] Current SC bar label overlap: ' .. tostring(settings.sc_bar_label_overlap))
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw scbarlabeloverlap <pixels>')
+        end
+
+    elseif cmd == 'scchaincountersize' then
+        local size = tonumber(arg1)
+        if size then
+            settings.sc_chain_counter_size = size
+            apply_all_visual_settings()
+            save_settings()
+            windower.add_to_chat(200, '[CrankWatch] SC chain counter size saved: ' .. size)
+        else
+            windower.add_to_chat(200, '[CrankWatch] Current SC chain counter size: ' .. tostring(settings.sc_chain_counter_size))
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw scchaincountersize <size>')
+        end
+
+    elseif cmd == 'scchaincountergap' then
+        local gap = tonumber(arg1)
+        if gap then
+            settings.sc_chain_counter_gap = gap
+            update_display()
+            save_settings()
+            windower.add_to_chat(200, '[CrankWatch] SC chain counter offset saved: ' .. gap)
+        else
+            windower.add_to_chat(200, '[CrankWatch] Current SC chain counter offset: ' .. tostring(settings.sc_chain_counter_gap))
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw scchaincountergap <pixels>  -- offset from Bonus Chance text')
+        end
+
+
+    elseif cmd == 'scinfogap' then
+        local gap = tonumber(arg1)
+
+        if gap then
+            settings.sc_chain_info_gap = gap
+            update_display()
+            request_layout_refresh(0.5)
+            save_settings()
+            windower.add_to_chat(200, '[CrankWatch] SC info gap saved: ' .. gap)
+        else
+            windower.add_to_chat(200, '[CrankWatch] Current SC info gap: ' .. tostring(settings.sc_chain_info_gap))
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw scinfogap <pixels>')
+        end
 
     elseif cmd == 'testcrankedstreak' then
         commit('Torcleaver', '99999')
@@ -1691,7 +3213,6 @@ windower.register_event('addon command', function(cmd, arg1, arg2)
             settings.pop_enabled = false
             pop_active = false
             dmg_text:size(settings.dmg_size)
-            highlight_text:size(settings.dmg_size)
             update_display()
             save_settings()
             windower.add_to_chat(200, '[CrankWatch] Pop disabled.')
@@ -1719,24 +3240,6 @@ windower.register_event('addon command', function(cmd, arg1, arg2)
             windower.add_to_chat(200, '[CrankWatch] Pop duration saved: ' .. duration .. 's')
         else
             windower.add_to_chat(200, '[CrankWatch] Usage: //cw poptime 0.35')
-        end
-
-    elseif cmd == 'gradient' then
-        local value = arg1 and arg1:lower() or ''
-
-        if value == 'on' then
-            settings.gradient_enabled = true
-            apply_all_visual_settings()
-            save_settings()
-            windower.add_to_chat(200, '[CrankWatch] Gradient enabled.')
-        elseif value == 'off' then
-            settings.gradient_enabled = false
-            highlight_visible = false
-            highlight_text:hide()
-            save_settings()
-            windower.add_to_chat(200, '[CrankWatch] Gradient disabled.')
-        else
-            windower.add_to_chat(200, '[CrankWatch] Usage: //cw gradient on|off')
         end
 
     elseif cmd == 'flairfade' then
@@ -1783,6 +3286,81 @@ windower.register_event('addon command', function(cmd, arg1, arg2)
             windower.add_to_chat(200, '[CrankWatch] WHIFF shake saved: strength ' .. strength .. ', duration ' .. duration .. 's')
         else
             windower.add_to_chat(200, '[CrankWatch] Usage: //cw whiffshake 6 0.45')
+        end
+
+
+    elseif cmd == 'testbar' then
+        commit('Savage Blade', '54321')
+
+    elseif cmd == 'scbar' then
+        local value = arg1 and arg1:lower() or ''
+
+        if value == 'on' then
+            settings.sc_bar_enabled = true
+            save_settings()
+            windower.add_to_chat(200, '[CrankWatch] Skillchain HUD enabled: countdown bar, chain tracker, and last skillchain elements.')
+        elseif value == 'off' then
+            settings.sc_bar_enabled = false
+            stop_sc_bar(true)
+            sc_chain_counter_visible = false
+            sc_chain_counter_text:hide()
+            hide_sc_chain_info()
+            save_settings()
+            windower.add_to_chat(200, '[CrankWatch] Skillchain HUD disabled: countdown bar, chain tracker, and last skillchain elements.')
+        else
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw scbar on|off')
+        end
+
+    elseif cmd == 'scbargap' then
+        local gap = tonumber(arg1)
+
+        if gap then
+            settings.sc_bar_gap = gap
+            update_display()
+            save_settings()
+            windower.add_to_chat(200, '[CrankWatch] SC bar gap saved: ' .. gap)
+        else
+            windower.add_to_chat(200, '[CrankWatch] Current SC bar gap: ' .. tostring(settings.sc_bar_gap))
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw scbargap <pixels>')
+        end
+
+    elseif cmd == 'scbarwidth' then
+        local width = tonumber(arg1)
+
+        if width then
+            settings.sc_bar_width = math.max(6, math.floor(width))
+            update_display()
+            save_settings()
+            windower.add_to_chat(200, '[CrankWatch] SC bar width saved: ' .. settings.sc_bar_width)
+        else
+            windower.add_to_chat(200, '[CrankWatch] Current SC bar width: ' .. tostring(settings.sc_bar_width))
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw scbarwidth <characters>')
+        end
+
+    elseif cmd == 'scbarsize' then
+        local size = tonumber(arg1)
+
+        if size then
+            settings.sc_bar_size = math.max(8, math.floor(size))
+            sc_bar_text:size(settings.sc_bar_size)
+            update_display()
+            save_settings()
+            windower.add_to_chat(200, '[CrankWatch] SC bar size saved: ' .. settings.sc_bar_size)
+        else
+            windower.add_to_chat(200, '[CrankWatch] Current SC bar size: ' .. tostring(settings.sc_bar_size))
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw scbarsize <size>')
+        end
+
+    elseif cmd == 'scbardelay' then
+        local delay = tonumber(arg1)
+
+        if delay then
+            settings.sc_bar_delay = math.max(0, delay)
+            save_settings()
+            windower.add_to_chat(200, '[CrankWatch] SC bar delay saved: ' .. settings.sc_bar_delay .. 's')
+        else
+            windower.add_to_chat(200, '[CrankWatch] Current SC bar delay: ' .. tostring(settings.sc_bar_delay) .. 's')
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw scbardelay <seconds>')
         end
 
     elseif cmd == 'scsize' then
@@ -1846,15 +3424,26 @@ windower.register_event('addon command', function(cmd, arg1, arg2)
             .. ' | font ' .. tostring(settings.font))
 
     elseif cmd == 'reset' or cmd == 'resetavg' then
-        total_ws_damage = 0
-        total_ws_count = 0
-        avg_dmg = '-'
-        apply_avg_style(0)
-        update_display()
-        request_layout_refresh(0.45)
-        windower.add_to_chat(200, '[CrankWatch] Average reset.')
+        reset_average(false)
 
-    elseif cmd == 'factoryreset' then
+    elseif cmd == 'autoreset' then
+        local state = tostring(arg1 or ''):lower()
+
+        if state == 'on' then
+            settings.auto_reset = true
+            save_settings()
+            windower.add_to_chat(200, '[CrankWatch] Auto average reset: ON')
+        elseif state == 'off' then
+            settings.auto_reset = false
+            save_settings()
+            windower.add_to_chat(200, '[CrankWatch] Auto average reset: OFF')
+        elseif state == '' then
+            windower.add_to_chat(200, '[CrankWatch] Auto average reset: ' .. (settings.auto_reset and 'ON' or 'OFF'))
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw autoreset on|off')
+        else
+            windower.add_to_chat(200, '[CrankWatch] Usage: //cw autoreset on|off')
+        end
+elseif cmd == 'factoryreset' then
         settings.center_x = defaults.center_x
         settings.center_y = defaults.center_y
         settings.ws_size = defaults.ws_size
@@ -1882,10 +3471,17 @@ windower.register_event('addon command', function(cmd, arg1, arg2)
         settings.sc_gap = defaults.sc_gap
         settings.sc_size = defaults.sc_size
         settings.sc_offset_y = defaults.sc_offset_y
+        settings.sc_bar_enabled = defaults.sc_bar_enabled
+        settings.sc_bar_gap = defaults.sc_bar_gap
+        settings.sc_bar_size = defaults.sc_bar_size
+        settings.sc_bar_width = defaults.sc_bar_width
+        settings.sc_bar_delay = defaults.sc_bar_delay
+        settings.sc_bar_max_step = defaults.sc_bar_max_step
+        settings.sc_bar_font = defaults.sc_bar_font
         settings.pop_enabled = defaults.pop_enabled
         settings.pop_duration = defaults.pop_duration
         settings.pop_bonus_size = defaults.pop_bonus_size
-        settings.gradient_enabled = defaults.gradient_enabled
+        settings.auto_reset = defaults.auto_reset
         settings.flair_fade_duration = defaults.flair_fade_duration
         settings.flair_shrink_size = defaults.flair_shrink_size
         settings.flair_float_distance = defaults.flair_float_distance
@@ -1904,11 +3500,16 @@ windower.register_event('addon command', function(cmd, arg1, arg2)
         avg_text:hide()
         avg_label_text:hide()
         avg_value_text:hide()
+        avg_trend_text:hide()
         sc_text:hide()
+        sc_bar_text:hide()
+        sc_bar_label_text:hide()
+        sc_bar_status_text:hide()
+        sc_chain_counter_text:hide()
         flair_text:hide()
-        highlight_text:hide()
-        fade_state = 'hidden'
+                fade_state = 'hidden'
         alpha_current = 0
+        stop_sc_bar(false)
 
     elseif cmd == 'show' then
         fade_state = 'visible'
@@ -1922,10 +3523,24 @@ windower.register_event('addon command', function(cmd, arg1, arg2)
         windower.add_to_chat(200, '[CrankWatch] Debug mode: ' .. tostring(debug_mode))
 
     elseif cmd == 'help' then
-        windower.add_to_chat(200, '[CrankWatch] Commands: //cw test | testwhite | testwhiff | testbig | testred | testmassive | testsc | testcrankedstreak | reset | show | hide | layout | pos x y | size 36 | gap 45 | avggap 99 | flairgap 100 | stroke 4 | font Highwind | fade on|off | fadetime 60 8 | fadein 0.3 | pop on|off | popsize 8 | poptime 0.35 | gradient on|off | flairfade 1.5 | flairshrink 0 | flairfloat 32 | whiffshake 6 0.45 | scsize 28 | scfade 4.5 | scfloat 32 | scoffset 0 | reset | factoryreset | debug')
+        windower.add_to_chat(200, '[CrankWatch] Commands: //cw test | testwhite | testwhiff | testbig | testred | testmassive | testsc <skillchain> | testbar | testcrankedstreak | reset | show | hide | layout | pos x y | size 36 | gap 45 | avggap 99 | flairgap 100 | stroke 4 | font Highwind | fade on|off | fadetime 60 8 | fadein 0.3 | pop on|off | popsize 8 | poptime 0.35 | flairfade 1.5 | flairshrink 0 | flairfloat 32 | whiffshake 6 0.45 | scsize 28 | scfade 4.5 | scfloat 32 | scoffset 0 | scbar on|off | mb on|off | scbargap 132 | scbarwidth 34 | scbarsize 18 | scbardelay 3 | autoreset on|off | reset | factoryreset | debug')
 
     else
-        windower.add_to_chat(200, '[CrankWatch] Commands: //cw test | testwhite | testwhiff | testbig | testred | testmassive | testsc | testcrankedstreak | reset | show | hide | layout | pos x y | size 36 | gap 45 | avggap 99 | flairgap 100 | stroke 4 | font Highwind | fade on|off | fadetime 60 8 | fadein 0.3 | pop on|off | popsize 8 | poptime 0.35 | gradient on|off | flairfade 1.5 | flairshrink 0 | flairfloat 32 | whiffshake 6 0.45 | scsize 28 | scfade 4.5 | scfloat 32 | scoffset 0 | reset | factoryreset | debug')
+        windower.add_to_chat(200, '[CrankWatch] Commands: //cw test | testwhite | testwhiff | testbig | testred | testmassive | testsc <skillchain> | testbar | testcrankedstreak | reset | show | hide | layout | pos x y | size 36 | gap 45 | avggap 99 | flairgap 100 | stroke 4 | font Highwind | fade on|off | fadetime 60 8 | fadein 0.3 | pop on|off | popsize 8 | poptime 0.35 | flairfade 1.5 | flairshrink 0 | flairfloat 32 | whiffshake 6 0.45 | scsize 28 | scfade 4.5 | scfloat 32 | scoffset 0 | scbar on|off | mb on|off | scbargap 132 | scbarwidth 34 | scbarsize 18 | scbardelay 3 | autoreset on|off | reset | factoryreset | debug')
+    end
+end)
+
+windower.register_event('zone change', function()
+    if not settings.auto_reset then
+        if debug_mode then
+            windower.add_to_chat(200, '[CrankWatch] Auto average reset skipped on zone change.')
+        end
+        return
+    end
+
+    reset_average(true)
+    if debug_mode then
+        windower.add_to_chat(200, '[CrankWatch] Average reset on zone change.')
     end
 end)
 
@@ -1952,17 +3567,22 @@ windower.register_event('unload', function()
         avg_value_text:destroy()
     end
 
+    if avg_trend_text then
+        avg_trend_text:destroy()
+    end
+
     if sc_text then
         sc_text:destroy()
+    end
+
+    if sc_bar_text then
+        sc_bar_text:destroy()
     end
 
     if flair_text then
         flair_text:destroy()
     end
 
-    if highlight_text then
-        highlight_text:destroy()
-    end
 end)
 
 apply_all_visual_settings()
