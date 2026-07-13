@@ -1,385 +1,169 @@
-CrankWatch v1.0 — Complete Commands README
+CrankWatch v2.0 — README
+
 A cinematic Weapon Skill tracker addon for Final Fantasy XI / Windower
-NOTE:  You must publish damage to your log.  Check Config > Misc. > Damage Display: Make sure either 'Log' or 'Both' is selected.
-Primary command aliases:
-  //cw
-  //crankwatch
 
-Example:
-  //cw show
-  //crankwatch show
+Primary command aliases: - //cw - //crankwatch
 
-==================================================
-HIGHWIND FONT
-==================================================
+------------------------------------------------------------------------
 
--CrankWatch defaults to Highwind Font which is a custom font
--Highwind can be downloaded here: https://font.download/font/highwind
--It's easy to install!  Once downloaded just right click the font file and choose 'Install'
--BUT if you don't want this font or prefer a different font, CrankWatch is fully compatible with any Windows Font! (//cw font FONTNAME))
+QUICK START (Most Common Commands)
 
-==================================================
-DEFAULT BEHAVIOR
-==================================================
+  -----------------------------------------------------------------------
+  Command                       Description
+  ----------------------------- -----------------------------------------
+  //cw show                     Show the HUD immediately.
 
-- The GUI starts hidden on load.
-- The overlay appears automatically after your first tracked Weapon Skill.
-- The overlay can be shown manually with //cw show.
-- Position is draggable and auto-saves when you release the mouse.
-- Weapon Skill whitelist protection prevents food, items, JAs, rolls, waltzes, jumps, etc. from falsely triggering WS tracking.
-- No packet injection is used.
+  //cw hide                     Hide the HUD.
 
-==================================================
-COMMAND ALIASES
-==================================================
+  //cw pos X Y                  Move the HUD to a specific location.
 
-Both command aliases work:
+  //cw size #                   Adjust the overall HUD size.
 
-  //cw <command>
-  //crankwatch <command>
+  //cw reset                    Reset average Weapon Skill damage.
+
+  //cw scbar on / off           Enable or disable the Skillchain HUD (SC
+                                bar, Chain tracker, Last Skillchain
+                                display).
+
+  //cw mb on / off              Enable or disable Magic Burst popups.
+
+  //cw help                     Display all available commands in-game.
+  -----------------------------------------------------------------------
+
+------------------------------------------------------------------------
+
+TEST COMMANDS
+
+  Command                    Description
+  -------------------------- ---------------------------------
+  //cw test                  Standard Weapon Skill test.
+  //cw testwhite             White damage test.
+  //cw testwhiff             WHIFF test.
+  //cw testbig               BIG HIT test.
+  //cw testred               MASSIVE HIT test.
+  //cw testmassive           99,999 CRANKED test.
+  //cw testsc <skillchain>   Preview any Skillchain display.
+  //cw testmb [damage]       Preview the Magic Burst popup.
+
+Supported Skillchains:
+
+Liquefaction, Induration, Reverberation, Detonation, Scission,
+Impaction, Transfixion, Compression, Fusion, Fragmentation, Distortion,
+Gravitation, Light, Darkness, Radiance, Umbra
 
 Examples:
-  //cw test
-  //crankwatch test
 
-==================================================
-BASIC DISPLAY COMMANDS
-==================================================
+    //cw testsc fusion
+    //cw testsc darkness
+    //cw testsc radiance
 
-Show the overlay:
-  //cw show
+------------------------------------------------------------------------
 
-Hide the overlay:
-  //cw hide
+INSTALLATION
 
-Show all commands in-game:
-  //cw help
+-   Place CrankWatch.lua in your Windower addons folder.
+-   Load with //lua load crankwatch.
+-   The HUD is hidden until your first tracked Weapon Skill or
+    //cw show.
 
-==================================================
-LAYOUT SETTINGS
-==================================================
-View layout settings quickly:
+Highwind Font
 
-//cw layout
+CrankWatch defaults to the Highwind font.
 
-Will display the main GUI settings to make adjustments easier.
+Download: https://font.download/font/highwind
 
-==================================================
+Any installed Windows font may also be used:
+
+    //cw font Arial
+
+------------------------------------------------------------------------
+
+DEFAULT BEHAVIOR
+
+-   HUD starts hidden.
+-   Appears automatically after your first tracked Weapon Skill.
+-   Position is controlled with //cw pos X Y.
+-   Weapon Skill whitelist prevents false triggers from JAs, items,
+    rolls, waltzes, etc.
+-   No packet injection is used.
+
+------------------------------------------------------------------------
+
 POSITIONING
-==================================================
 
-Set exact overlay center position:
-  //cw pos X Y
+    //cw pos X Y
 
 Example:
-  //cw pos 900 450
 
-Notes:
-- X controls horizontal position.
-- Y controls vertical position.
-- You can also drag the overlay with the mouse.
-- Position saves automatically after dragging.
+    //cw pos 900 450
 
+------------------------------------------------------------------------
 
-==================================================
-MAIN SIZE CONTROL
-==================================================
+APPEARANCE
 
-Adjust overall overlay size:
-  //cw size 36
+Useful commands:
 
-Important:
-- This is a master scaler.
-- It changes WS text, damage text, average text, flair size, and spacing.
-- If you only want to change SC Bonus size, use //cw scsize instead.
+    //cw size 36
+    //cw gap 44
+    //cw avggap 86
+    //cw flairgap 118
+    //cw font Highwind
+    //cw stroke 4
 
-Default-style example:
-  //cw size 36
+------------------------------------------------------------------------
 
-==================================================
-SPACING / GAP CONTROLS
-==================================================
+SKILLCHAIN HUD
 
-Adjust gap between WS line and damage line:
-  //cw gap 44
+Enable or disable the complete Skillchain HUD:
 
-Adjust gap for the average damage line:
-  //cw avggap 86
+    //cw scbar on
+    //cw scbar off
 
-Adjust gap for flair text:
-  //cw flairgap 118
+This controls:
 
-Notes:
-- Larger values move that element lower.
-- Smaller values move that element higher.
+-   Skillchain countdown bar
+-   Chain tracker
+-   Last Skillchain display
 
-==================================================
-FONT AND OUTLINE
-==================================================
+------------------------------------------------------------------------
 
-Change font:
-  //cw font Highwind
+MAGIC BURST
 
-Example:
-  //cw font Arial
+Enable or disable Magic Burst popups:
 
-Adjust outline / stroke thickness:
-  //cw stroke 4
+    //cw mb on
+    //cw mb off
 
-Notes:
-- Higher stroke values make text outlines thicker.
-- Highwind.ttf should be installed in Windows Fonts or otherwise available to Windower.
+------------------------------------------------------------------------
 
-==================================================
-MAIN GUI FADE CONTROLS
-==================================================
+RESETS
 
-Enable GUI fade behavior:
-  //cw fade on
+Reset average damage:
 
-Disable GUI fade behavior:
-  //cw fade off
+    //cw reset
 
-Set hold time and fade-out time:
-  //cw fadetime HOLD_SECONDS FADE_SECONDS
+Factory reset:
 
-Example:
-  //cw fadetime 60 8
+    //cw factoryreset
 
-Meaning:
-- Hold fully visible for 60 seconds.
-- Fade out over 8 seconds.
+------------------------------------------------------------------------
 
-Adjust fade-in speed:
-  //cw fadein 0.3
-
-Notes:
-- Lower fadein values feel snappier.
-- Higher fadein values feel smoother/slower.
-
-==================================================
-POP ANIMATION CONTROLS
-==================================================
-
-Enable damage pop animation:
-  //cw pop on
-
-Disable damage pop animation:
-  //cw pop off
-
-Adjust pop size bonus:
-  //cw popsize 8
-
-Adjust pop duration:
-  //cw poptime 0.35
-
-Notes:
-- Pop animation applies to large hits.
-- popsize controls how much the damage text briefly enlarges.
-- poptime controls how long the pop animation lasts.
-
-==================================================
-GRADIENT / HIGHLIGHT CONTROLS
-==================================================
-
-Enable gradient highlight:
-  //cw gradient on
-
-Disable gradient highlight:
-  //cw gradient off
-
-Notes:
-- Gradient adds an extra highlight overlay to large damage text.
-- If text looks blurry, try turning gradient off.
-
-==================================================
-BIG HIT / MASSIVE HIT / CRANKED FLAIR CONTROLS
-==================================================
-
-Adjust flair fade duration:
-  //cw flairfade 1.5
-
-Adjust flair shrink amount:
-  //cw flairshrink 0
-
-Adjust flair upward float distance:
-  //cw flairfloat 32
-
-Notes:
-- Flair includes BIG HIT, MASSIVE HIT, CRANKED, and related popup text.
-- flairfade controls how long the flair takes to fade.
-- flairshrink controls whether the flair shrinks while fading.
-- flairfloat controls how far the flair drifts upward.
-
-==================================================
-SKILLCHAIN BONUS CONTROLS
-==================================================
-
-Adjust SC Bonus font size:
-  //cw scsize 30
-
-Example:
-  //cw scsize 40
-
-Adjust SC Bonus fade duration:
-  //cw scfade 4.5
-
-Adjust SC Bonus upward float distance:
-  //cw scfloat 32
-
-Adjust SC Bonus vertical placement:
-  //cw scoffset 18
-
-Notes:
-- Positive scoffset values move SC Bonus lower.
-- Negative scoffset values move SC Bonus higher.
-- scsize only affects SC Bonus text.
-- scfade controls how long SC Bonus remains visible/fading.
-- scfloat controls how far SC Bonus moves upward during fade.
-
-==================================================
-WHIFF CONTROLS
-==================================================
-
-Adjust WHIFF shake:
-  //cw whiffshake STRENGTH DURATION
-
-Example:
-  //cw whiffshake 6 0.45
-
-Notes:
-- Strength controls shake intensity.
-- Duration controls how long the shake lasts.
-- WHIFF also triggers the LOL popup.
-
-==================================================
-AVERAGE DAMAGE / RESET COMMANDS
-==================================================
-
-Reset average WS damage:
-  //cw reset
-
-Alternative reset command:
-  //cw resetavg
-
-Factory reset all settings:
-  //cw factoryreset
-
-Notes:
-- reset/resetavg only clears average damage tracking.
-- factoryreset restores saved addon settings to defaults.
-
-==================================================
-DEBUG COMMAND
-==================================================
+DEBUG
 
 Toggle debug mode:
-  //cw debug
 
-Notes:
-- Debug mode prints chat parsing information.
-- Useful for diagnosing missed WS, false detections, or SC detection behavior.
-- Toggle it off again with the same command.
+    //cw debug
 
-==================================================
-TEST COMMANDS
-==================================================
+------------------------------------------------------------------------
 
-Standard damage test:
-  //cw test
+NOTES
 
-White/small damage test:
-  //cw testwhite
+Changes for v1.2:
 
-WHIFF test:
-  //cw testwhiff
-
-BIG HIT test:
-  //cw testbig
-
-MASSIVE HIT / red-tier test:
-  //cw testred
-
-CRANKED 99,999 test:
-  //cw testmassive
-
-Skillchain Bonus test:
-  //cw testsc
-
-CRANKED streak test:
-  //cw testcrankedstreak
-
-Notes:
-- Test commands are useful for positioning and visual tuning.
-- Use //cw show first if you want to manually inspect layout before combat.
-- testsc is useful for tuning scsize, scfade, scfloat, and scoffset.
-
-==================================================
-QUICK TUNING EXAMPLES
-==================================================
-
-Show overlay:
-  //cw show
-
-Move overlay:
-  //cw pos 900 450
-
-Restore common base size:
-  //cw size 36
-
-Adjust normal line spacing:
-  //cw gap 44
-
-Adjust average line spacing:
-  //cw avggap 86
-
-Adjust flair spacing:
-  //cw flairgap 118
-
-Make SC Bonus bigger:
-  //cw scsize 40
-
-Move SC Bonus lower:
-  //cw scoffset 18
-
-Make SC Bonus linger longer:
-  //cw scfade 6
-
-Make SC Bonus float less:
-  //cw scfloat 18
-
-Disable gradient if damage text looks blurry:
-  //cw gradient off
-
-Reset average:
-  //cw reset
-
-==================================================
-FEATURE SUMMARY
-==================================================
-
-CrankWatch v1.0 includes:
-
-- Weapon Skill whitelist protection
-- Last WS display
-- WS damage display
-- Average WS damage tracking
-- BIG HIT flair
-- MASSIVE HIT flair
-- CRANKED 99,999 flair
-- CRANKED streak tracking
-- WHIFF display and shake
-- LOL popup on WHIFF
-- Skillchain Bonus popup
-- SC Bonus sizing/fade/float/offset controls
-- Pop animation for large hits
-- Optional gradient highlights
-- Fade-in and fade-out behavior
-- Draggable saved positioning
-- Hidden-on-load behavior
-- Debug mode
-- No packet injection
-
-==================================================
-END
-==================================================
+-   Removed gradient system.
+-   Removed drag-and-drop positioning.
+-   Added Skillchain HUD toggle.
+-   Added Magic Burst toggle.
+-   Added //cw testsc <skillchain>.
+-   Default HUD layout updated to the streamlined Velner layout.
+-   Expanded Light/Darkness element displays for readability.
