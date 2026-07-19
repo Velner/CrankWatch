@@ -2684,12 +2684,10 @@ windower.register_event('incoming text', function(original, modified)
     local line = clean_line(original)
     local mod_line = clean_line(modified)
 
-    if debug_mode then
-        windower.add_to_chat(207, '[wsdamage debug] ' .. line)
-        if mod_line ~= '' and mod_line ~= line then
-            windower.add_to_chat(207, '[wsdamage debug modified] ' .. mod_line)
-        end
-    end
+    -- Debug mode intentionally does not echo every incoming chat line.
+    -- The old raw-line dump flooded the chat log (and could print each line twice
+    -- when Battlemod supplied a modified version). Keep only targeted parser and
+    -- skillchain diagnostics below.
 
     if pending_ws and (now - pending_time > settings.pending_timeout) then
         if debug_mode then
