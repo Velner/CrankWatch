@@ -412,6 +412,8 @@ local weapon_skills = {
     ['Daze'] = true,
     ['Armor Piercer'] = true,
     ['Armor Shatterer'] = true,
+	['Fast Blade II'] = true,
+	['Dragon Blow'] = true,
 }
 
 local function is_weapon_skill(name)
@@ -1451,6 +1453,11 @@ local function make_sc_bar(percent)
 end
 
 local stop_sc_bar
+-- Forward declarations: these functions are called by helpers defined below
+-- before their implementations appear later in the file. Without these, Lua
+-- resolves the early calls as globals and raises a nil-value runtime error.
+local update_display
+local request_layout_refresh
 
 local function start_sc_bar_from_time(base_time, step, target_id, action_id, actor_id, delay_override)
     if not settings.sc_bar_enabled then return end
@@ -1730,7 +1737,7 @@ local function update_sc_bar()
     end
 end
 
-local function request_layout_refresh(duration)
+request_layout_refresh = function(duration)
     -- Windower text extents can lag for a few frames after changing text/size/font.
     -- Re-centering briefly keeps the overlay at the saved //cw pos immediately.
     layout_refresh_until = os.clock() + (duration or 0.35)
@@ -1824,7 +1831,7 @@ local function reset_average(silent)
     end
 end
 
-local function update_display()
+update_display = function()
     ws_text:text('Last WS: ' .. last_ws .. '!')
 
     local damage_line = last_dmg .. ' damage!!'
@@ -1914,7 +1921,7 @@ local function clean_line(line)
     if not line then return '' end
 
     line = line:gsub('cs%(%d+,%d+,%d+%)', '')
-    line = line:gsub('cr', '')
+    --line = line:gsub('cr', '')
     line = line:gsub('\30.', '')
     line = line:gsub('\31.', '')
     line = line:gsub('%s+', ' ')
